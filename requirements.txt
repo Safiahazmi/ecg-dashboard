@@ -1,0 +1,7 @@
+Flask==3.0.3
+python-dotenv==1.0.1
+psycopg2-binary==2.9.9
+pyserial==3.5
+joblib==1.4.2
+numpy==1.26.4
+gunicorn==22.0.0

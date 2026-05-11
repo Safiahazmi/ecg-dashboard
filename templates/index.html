@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ECG Arrhythmia Detection Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+    <div class="dashboard-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-icon">⌁</div>
+                <div>
+                    <h1 data-i18n="brand_title">ECG Dashboard</h1>
+                    <p data-i18n="brand_subtitle">Arrhythmia Detection</p>
+                </div>
+            </div>
+
+            <nav class="nav-menu" aria-label="Dashboard navigation">
+                <button class="nav-item active" data-target="dashboard-page"><span>▦</span><b data-i18n="nav_dashboard">Dashboard</b></button>
+                <button class="nav-item" data-target="team-page"><span>👥</span><b data-i18n="nav_team">Project Team</b></button>
+                <button class="nav-item" data-target="live-page"><span>⌁</span><b data-i18n="nav_live">Live ECG</b></button>
+                <button class="nav-item" data-target="prediction-page"><span>◎</span><b data-i18n="nav_prediction">Prediction</b></button>
+                <button class="nav-item" data-target="history-page"><span>◴</span><b data-i18n="nav_history">History</b></button>
+                <button class="nav-item" data-target="database-page"><span>◉</span><b data-i18n="nav_database">Database</b></button>
+            </nav>
+
+            <div class="sidebar-wave">
+                <svg viewBox="0 0 280 90" preserveAspectRatio="none">
+                    <path d="M0 58 L45 58 L55 28 L65 75 L75 58 L125 58 L135 40 L145 58 L178 58 L190 15 L202 84 L212 58 L280 58" />
+                </svg>
+            </div>
+
+            <div class="side-status">
+                <span class="pulse-dot"></span>
+                <div>
+                    <p data-i18n="system_status">System Status</p>
+                    <strong id="sideConnection">Checking...</strong>
+                    <small>ESP32 + AD8232</small>
+                </div>
+            </div>
+        </aside>
+
+        <main class="content">
+            <header class="topbar">
+                <div>
+                    <h2 data-i18n="main_title">Portable Real-Time ECG-Based Arrhythmia Detection Dashboard</h2>
+                    <p>ESP32 + AD8232 + Machine Learning + PostgreSQL</p>
+                </div>
+                <div class="top-actions">
+                    <div class="language-switch" aria-label="Language switch">
+                        <button type="button" class="lang-btn active" data-lang="en">EN</button>
+                        <button type="button" class="lang-btn" data-lang="ms">BM</button>
+                    </div>
+                    <div class="live-badge"><span></span><b data-i18n="live_status">Live</b></div>
+                </div>
+            </header>
+
+            <!-- PAGE 1: DASHBOARD -->
+            <section id="dashboard-page" class="page-section active">
+                <div class="dashboard-grid">
+                    <section class="main-column">
+                        <div class="top-grid">
+                            <article class="card classification-card">
+                                <div class="card-heading">
+                                    <span data-i18n="current_classification">Current ECG Classification</span>
+                                    <div class="heart-check" id="classificationIcon">✓</div>
+                                </div>
+                                <div class="classification-label" id="dashboardPredictionLabel">WAITING</div>
+                                <p class="quality-line"><span class="pulse-dot"></span><span id="dashboardPredictionNote">Waiting for latest ML prediction.</span></p>
+                                <div class="classification-meta">
+                                    <div>
+                                        <small data-i18n="last_update">Last Update</small>
+                                        <strong id="dashboardLastUpdate">--</strong>
+                                    </div>
+                                    <div>
+                                        <small data-i18n="device">Device</small>
+                                        <strong id="dashboardDeviceId">--</strong>
+                                    </div>
+                                </div>
+                            </article>
+
+                            <article class="card summary-card">
+                                <div class="card-heading"><span data-i18n="detection_summary">Detection Summary</span><small data-i18n="normal_abnormal">Normal / Abnormal</small></div>
+                                <div class="summary-numbers">
+                                    <div><span data-i18n="normal">Normal</span><strong id="normalCountMain">0</strong><small id="normalPercent">0%</small></div>
+                                    <div class="divider"></div>
+                                    <div><span data-i18n="abnormal">Abnormal</span><strong id="abnormalCountMain">0</strong><small id="abnormalPercent">0%</small></div>
+                                </div>
+                                <div class="ratio-bar"><span id="normalBar"></span><i id="abnormalBar"></i></div>
+                            </article>
+                        </div>
+
+                        <div class="feature-row">
+                            <article class="card feature-card"><p>0_pre-RR</p><strong id="dashPreRR">--</strong><small data-i18n="pre_rr_desc">Preceding RR interval</small></article>
+                            <article class="card feature-card"><p>0_post-RR</p><strong id="dashPostRR">--</strong><small data-i18n="post_rr_desc">Following RR interval</small></article>
+                            <article class="card feature-card"><p>0_rPeak</p><strong id="dashRPeak">--</strong><small data-i18n="rpeak_desc">R peak raw amplitude</small></article>
+                            <article class="card feature-card"><p>0_qrs_interval</p><strong id="dashQRS">--</strong><small data-i18n="qrs_desc">QRS duration</small></article>
+                        </div>
+
+                        <div class="bottom-grid">
+                            <article class="card chart-card">
+                                <div class="card-heading"><span data-i18n="feature_trend">ECG Feature Trend</span><small><span data-i18n="auto_refresh">Auto refresh</span>: 3s</small></div>
+                                <svg id="dashboardChart" viewBox="0 0 850 270" preserveAspectRatio="none"></svg>
+                                <div class="chart-legend">
+                                    <span><b class="legend-purple"></b><i data-i18n="time_trend">RR/QRS time trend</i></span>
+                                    <span><b class="legend-green"></b><i data-i18n="rpeak_trend">R-peak trend</i></span>
+                                </div>
+                            </article>
+
+                            <article class="card recent-card">
+                                <div class="card-heading"><span data-i18n="recent_prediction_history">Recent Prediction History</span><button class="text-button" data-target="history-page" data-i18n="view_all">View All</button></div>
+                                <div class="recent-list" id="recentList"></div>
+                            </article>
+                        </div>
+                    </section>
+                </div>
+            </section>
+
+            <!-- PAGE 2: PROJECT TEAM -->
+            <section id="team-page" class="page-section">
+                <div class="page-title">
+                    <p data-i18n="project_team">Project Team</p>
+                    <h3 data-i18n="team_heading">Supervisor & Student Roles</h3>
+                    <span data-i18n="team_intro">These roles can be shown during project presentation, poster, or dashboard demonstration.</span>
+                </div>
+
+                <div class="team-grid">
+                    <article class="card person-profile supervisor">
+                        <img src="{{ url_for('static', filename='images/supervisor_puan_siti.png') }}" alt="Supervisor photo" />
+                        <div>
+                            <span data-i18n="supervisor">Supervisor</span>
+                            <h4>Puan Siti Sabariah Binti Salihin</h4>
+                            <p data-i18n="supervisor_role">Project supervision, guidance, evaluation direction, and academic monitoring.</p>
+                        </div>
+                    </article>
+
+                    <article class="card person-profile">
+                        <img src="{{ url_for('static', filename='images/safiah_binti_azmi.png') }}" alt="Safiah binti Azmi photo" />
+                        <div>
+                            <span data-i18n="team_member_1">Team Member 1</span>
+                            <h4>Safiah binti Azmi</h4>
+                            <p data-i18n="safiah_role">Hardware Development & Dashboard System</p>
+                        </div>
+                    </article>
+
+                    <article class="card person-profile">
+                        <img src="{{ url_for('static', filename='images/guganeswari.png') }}" alt="Guganeswari A/P Nagendrian photo" />
+                        <div>
+                            <span data-i18n="team_member_2">Team Member 2</span>
+                            <h4>Guganeswari A/P Nagendrian</h4>
+                            <p data-i18n="guga_role">Report Documentation & Hardware Development</p>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <!-- PAGE 3: LIVE ECG -->
+            <section id="live-page" class="page-section">
+                <div class="page-title">
+                    <p data-i18n="live_ecg">Live ECG</p>
+                    <h3 data-i18n="live_heading">Real-Time ECG Signal / Feature Monitoring</h3>
+                    <span data-i18n="live_intro">This page is used to view incoming ECG trend from AD8232 + ESP32. If raw ECG is not stored, this chart displays real-time extracted feature trend from PostgreSQL.</span>
+                </div>
+
+                <div class="live-layout">
+                    <article class="card wide-chart">
+                        <div class="card-heading"><span data-i18n="ecg_trend">ECG Trend</span><small>25 mm/s · 10 mm/mV · <i data-i18n="live_status">Live</i></small></div>
+                        <svg id="liveChart" viewBox="0 0 980 360" preserveAspectRatio="none"></svg>
+                    </article>
+                    <article class="card unit-note">
+                        <h4 data-i18n="unit_guide">Feature Unit Guide</h4>
+                        <p data-i18n="unit_pre_post"><b>0_pre-RR</b> and <b>0_post-RR</b> are RR interval timing features. They are displayed in <b>milliseconds (ms)</b>.</p>
+                        <p data-i18n="unit_qrs"><b>0_qrs_interval</b> is QRS duration. It is displayed in <b>milliseconds (ms)</b>.</p>
+                        <p data-i18n="unit_rpeak"><b>0_rPeak</b> is the detected ECG peak amplitude from hardware. It is displayed as <b>ADC/raw amplitude</b>, not ms.</p>
+                    </article>
+                </div>
+            </section>
+
+            <!-- PAGE 4: PREDICTION -->
+            <section id="prediction-page" class="page-section">
+                <div class="page-title">
+                    <p data-i18n="prediction">Prediction</p>
+                    <h3 data-i18n="prediction_heading">Latest ML Classification Result</h3>
+                    <span data-i18n="prediction_intro">The dashboard displays the result already predicted by the trained machine learning model.</span>
+                </div>
+
+                <div class="prediction-layout">
+                    <article class="card classification-card large-prediction">
+                        <div class="card-heading"><span data-i18n="latest_prediction">Latest Prediction</span><div class="heart-check" id="predictionIcon">✓</div></div>
+                        <div class="classification-label" id="predictionPageLabel">WAITING</div>
+                        <p class="quality-line"><span class="pulse-dot"></span><span id="predictionPageNote">Waiting for latest ML prediction.</span></p>
+                        <div class="classification-meta">
+                            <div><small data-i18n="confidence">Confidence</small><strong id="predictionConfidence">--</strong></div>
+                            <div><small data-i18n="last_update">Last Update</small><strong id="predictionLastUpdate">--</strong></div>
+                        </div>
+                    </article>
+
+                    <article class="card feature-detail-card">
+                        <h4 data-i18n="features_used">Features Used by Model</h4>
+                        <div class="feature-detail"><span>0_pre-RR</span><strong id="predPreRR">--</strong></div>
+                        <div class="feature-detail"><span>0_post-RR</span><strong id="predPostRR">--</strong></div>
+                        <div class="feature-detail"><span>0_rPeak</span><strong id="predRPeak">--</strong></div>
+                        <div class="feature-detail"><span>0_qrs_interval</span><strong id="predQRS">--</strong></div>
+                    </article>
+                </div>
+            </section>
+
+            <!-- PAGE 5: HISTORY -->
+            <section id="history-page" class="page-section">
+                <div class="page-title">
+                    <p data-i18n="history">History</p>
+                    <h3 data-i18n="history_heading">Stored Prediction Records</h3>
+                    <span data-i18n="history_intro">Prediction history is read from PostgreSQL. Normal and Abnormal results are kept for monitoring records.</span>
+                </div>
+
+                <article class="card table-card">
+                    <div class="card-heading"><span data-i18n="recent_records">Recent Records</span><small id="totalRecordText">0 records</small></div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th data-i18n="time">Time</th>
+                                    <th>0_pre-RR</th>
+                                    <th>0_post-RR</th>
+                                    <th>0_rPeak</th>
+                                    <th>0_qrs_interval</th>
+                                    <th data-i18n="prediction">Prediction</th>
+                                    <th data-i18n="confidence">Confidence</th>
+                                </tr>
+                            </thead>
+                            <tbody id="historyBody">
+                                <tr><td colspan="7" class="empty-row" data-i18n="no_data_yet">No data yet</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
+
+            <!-- PAGE 6: DATABASE -->
+            <section id="database-page" class="page-section">
+                <div class="page-title">
+                    <p data-i18n="database">Database</p>
+                    <h3 data-i18n="database_heading">PostgreSQL Connection & System Flow</h3>
+                    <span data-i18n="database_intro">This page confirms that ECG prediction data is stored and retrieved from PostgreSQL.</span>
+                </div>
+
+                <div class="database-grid">
+                    <article class="card db-card">
+                        <div class="db-icon">◉</div>
+                        <h4>PostgreSQL</h4>
+                        <p><span data-i18n="status">Status</span>: <b id="dbStatus">Checking...</b></p>
+                        <small><span data-i18n="database_name">Database name</span>: <span id="dbName">ecg_db</span></small>
+                    </article>
+                    <article class="card flow-card">
+                        <h4 data-i18n="system_flow">System Flow</h4>
+                        <div class="flow-step"><span>1</span> <i data-i18n="flow_1">AD8232 ECG sensor collects ECG signal.</i></div>
+                        <div class="flow-step"><span>2</span> <i data-i18n="flow_2">ESP32 sends ECG features to Python bridge.</i></div>
+                        <div class="flow-step"><span>3</span> <i data-i18n="flow_3">ML model predicts Normal or Abnormal.</i></div>
+                        <div class="flow-step"><span>4</span> <i data-i18n="flow_4">PostgreSQL stores prediction data.</i></div>
+                        <div class="flow-step"><span>5</span> <i data-i18n="flow_5">Dashboard displays result and history.</i></div>
+                    </article>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
