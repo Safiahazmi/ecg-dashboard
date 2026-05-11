@@ -708,183 +708,197 @@ td { color: #f5f7ff; }
     }
 }
 
-/* Added sections: project overview, patient biodata, and Excel export. Existing dashboard design is preserved. */
-.overview-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
-    gap: 18px;
-    margin: 20px 0;
+/* =========================================================
+   FONT UNIFORMITY FIX
+   Purpose: Make all segment headings and dashboard text sizes
+   consistent while preserving the original dark dashboard design.
+   ========================================================= */
+:root {
+    --font-family-main: Inter, "Segoe UI", Arial, sans-serif;
+    --font-main-title: clamp(28px, 2.45vw, 40px);
+    --font-page-title: clamp(24px, 1.9vw, 30px);
+    --font-section-title: 20px;
+    --font-card-label: 15px;
+    --font-card-value: 28px;
+    --font-status-value: clamp(48px, 4.3vw, 64px);
+    --font-small: 13px;
 }
 
-.project-overview-card,
-.patient-mini-card {
-    padding: 22px;
+html,
+body,
+button,
+input,
+select,
+textarea,
+table,
+th,
+td {
+    font-family: var(--font-family-main);
 }
 
-.project-overview-card p {
-    color: var(--muted);
-    line-height: 1.65;
-    margin: 0 0 16px;
-    font-weight: 650;
+/* Main dashboard title: still important, but no longer too large on narrow screens. */
+.topbar h2 {
+    font-size: var(--font-main-title);
+    line-height: 1.12;
+    letter-spacing: -0.035em;
+    max-width: 960px;
 }
 
-.overview-points {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+.topbar p {
+    font-size: 17px;
+    line-height: 1.45;
 }
 
-.overview-points span {
-    padding: 12px 14px;
-    border-radius: 14px;
-    background: rgba(255,255,255,0.04);
-    color: #dfe7ff;
-    border: 1px solid rgba(255,255,255,0.06);
-    font-size: 14px;
-    font-weight: 700;
+/* All page/segment titles are standardized. */
+.page-title h3 {
+    font-size: var(--font-page-title);
+    line-height: 1.18;
+    letter-spacing: -0.025em;
 }
 
-.patient-mini-card {
-    display: grid;
-    align-content: start;
-    gap: 12px;
+.page-title p {
+    font-size: 12px;
+    letter-spacing: 0.14em;
 }
 
-.patient-mini-detail,
-.patient-current-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 14px;
-    padding: 14px;
-    border-radius: 14px;
-    background: rgba(255,255,255,0.04);
+.page-title span {
+    font-size: 16px;
+    line-height: 1.55;
 }
 
-.patient-mini-detail small,
-.patient-current-row span {
-    color: var(--muted);
-    font-weight: 800;
+.card-heading span,
+.unit-note h4,
+.feature-detail-card h4,
+.db-card h4,
+.flow-card h4 {
+    font-size: var(--font-section-title);
+    line-height: 1.25;
+    letter-spacing: -0.01em;
 }
 
-.patient-mini-detail strong,
-.patient-current-row strong {
-    color: white;
-    text-align: right;
+.card-heading small,
+.feature-card p,
+.feature-detail span,
+.classification-meta small,
+.summary-numbers span,
+th,
+.recent-row small,
+.side-status p,
+.brand p,
+.chart-legend {
+    font-size: var(--font-small);
 }
 
-.patient-layout {
-    display: grid;
-    grid-template-columns: minmax(360px, 0.85fr) minmax(360px, 1fr);
-    gap: 22px;
+/* Values are consistent and not oversized. */
+.classification-label {
+    font-size: var(--font-status-value);
+    line-height: 1.03;
+    letter-spacing: -0.045em;
 }
 
-.patient-form-card,
-.patient-current-card {
-    padding: 28px;
+.feature-card strong,
+.feature-detail strong {
+    font-size: var(--font-card-value);
+    line-height: 1.15;
 }
 
-.patient-form-card h4,
-.patient-current-card h4 {
-    margin: 0 0 20px;
-    font-size: 24px;
+.summary-numbers strong {
+    font-size: 42px;
+    line-height: 1.05;
 }
 
-.patient-form-card form {
-    display: grid;
-    gap: 12px;
+.person-profile h4 {
+    font-size: 22px;
+    line-height: 1.25;
 }
 
-.patient-form-card label {
-    color: var(--muted);
-    font-weight: 900;
-    margin-top: 4px;
+.unit-note p,
+.person-profile p,
+.flow-step,
+td,
+.quality-line {
+    font-size: 15px;
+    line-height: 1.55;
 }
 
-.patient-form-card input {
-    width: 100%;
-    padding: 14px 16px;
-    border-radius: 14px;
-    border: 1px solid var(--border);
-    background: rgba(255,255,255,0.05);
-    color: var(--text);
-    font: 700 15px Inter, Segoe UI, Arial, sans-serif;
-    outline: none;
+.nav-item,
+.lang-btn,
+.live-badge,
+.text-button {
+    font-size: 15px;
 }
 
-.patient-form-card input:focus {
-    border-color: rgba(139,92,246,0.8);
-    box-shadow: 0 0 0 4px rgba(139,92,246,0.12);
+/* Prediction page title/card balance. */
+.large-prediction .classification-label {
+    font-size: clamp(46px, 4vw, 58px);
 }
 
-.primary-action,
-.export-button {
-    border: 0;
-    border-radius: 14px;
-    padding: 12px 16px;
-    cursor: pointer;
-    font-weight: 900;
-    color: white;
-    background: linear-gradient(135deg, rgba(47,124,255,0.95), rgba(139,92,246,0.92));
-    box-shadow: 0 12px 24px rgba(47,124,255,0.18);
-}
+/* Better mobile/tablet readability without changing layout style. */
+@media (max-width: 900px) {
+    .topbar h2 {
+        font-size: 28px;
+        line-height: 1.14;
+    }
 
-.primary-action {
-    margin-top: 8px;
-}
+    .topbar p {
+        font-size: 15px;
+    }
 
-.export-button {
-    padding: 9px 13px;
-    font-size: 13px;
-}
+    .page-title h3 {
+        font-size: 24px;
+    }
 
-.heading-actions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
+    .card-heading span,
+    .unit-note h4,
+    .feature-detail-card h4,
+    .db-card h4,
+    .flow-card h4 {
+        font-size: 19px;
+    }
 
-.form-message {
-    min-height: 20px;
-    margin: 6px 0 0;
-    color: var(--muted);
-    font-weight: 700;
-}
+    .classification-label,
+    .large-prediction .classification-label {
+        font-size: 44px;
+    }
 
-.form-message.success {
-    color: var(--green);
-}
+    .feature-card strong,
+    .feature-detail strong {
+        font-size: 24px;
+    }
 
-.form-message.error {
-    color: var(--red);
-}
-
-.patient-current-card {
-    display: grid;
-    align-content: start;
-    gap: 14px;
-}
-
-.patient-current-card p {
-    color: var(--muted);
-    line-height: 1.65;
-    margin: 8px 0 0;
-}
-
-@media (max-width: 1200px) {
-    .overview-row,
-    .patient-layout {
-        grid-template-columns: 1fr;
+    .summary-numbers strong {
+        font-size: 34px;
     }
 }
 
-@media (max-width: 760px) {
-    .overview-points {
-        grid-template-columns: 1fr;
+@media (max-width: 520px) {
+    .topbar h2 {
+        font-size: 24px;
     }
 
-    .heading-actions {
-        align-items: flex-start;
-        flex-direction: column;
+    .page-title h3 {
+        font-size: 22px;
+    }
+
+    .page-title span,
+    .unit-note p,
+    .person-profile p,
+    .flow-step,
+    td,
+    .quality-line {
+        font-size: 14px;
+    }
+
+    .classification-label,
+    .large-prediction .classification-label {
+        font-size: 38px;
+    }
+
+    .card-heading span,
+    .unit-note h4,
+    .feature-detail-card h4,
+    .db-card h4,
+    .flow-card h4 {
+        font-size: 18px;
     }
 }
