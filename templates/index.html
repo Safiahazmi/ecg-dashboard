@@ -20,6 +20,7 @@
             <nav class="nav-menu" aria-label="Dashboard navigation">
                 <button class="nav-item active" data-target="dashboard-page"><span>▦</span><b data-i18n="nav_dashboard">Dashboard</b></button>
                 <button class="nav-item" data-target="team-page"><span>👥</span><b data-i18n="nav_team">Project Team</b></button>
+                <button class="nav-item" data-target="patient-page"><span>▣</span><b data-i18n="nav_patient">Patient Biodata</b></button>
                 <button class="nav-item" data-target="live-page"><span>⌁</span><b data-i18n="nav_live">Live ECG</b></button>
                 <button class="nav-item" data-target="prediction-page"><span>◎</span><b data-i18n="nav_prediction">Prediction</b></button>
                 <button class="nav-item" data-target="history-page"><span>◴</span><b data-i18n="nav_history">History</b></button>
@@ -92,6 +93,25 @@
                             </article>
                         </div>
 
+                        <div class="overview-row">
+                            <article class="card project-overview-card">
+                                <div class="card-heading"><span data-i18n="project_overview">Project Overview</span><small data-i18n="overview_badge">ECG + ML + PostgreSQL</small></div>
+                                <p data-i18n="overview_text">This project develops a portable ECG-based arrhythmia monitoring system using AD8232, ESP32, machine learning classification, and PostgreSQL database storage.</p>
+                                <div class="overview-points">
+                                    <span data-i18n="overview_point_1">AD8232 captures ECG signal.</span>
+                                    <span data-i18n="overview_point_2">ESP32 sends ECG features to the Python bridge.</span>
+                                    <span data-i18n="overview_point_3">Machine learning classifies NORMAL or ABNORMAL.</span>
+                                    <span data-i18n="overview_point_4">PostgreSQL stores patient biodata and prediction history.</span>
+                                </div>
+                            </article>
+
+                            <article class="card patient-mini-card">
+                                <div class="card-heading"><span data-i18n="patient_biodata">Patient Biodata</span><button class="text-button" data-target="patient-page" data-i18n="update_biodata">Update</button></div>
+                                <div class="patient-mini-detail"><small data-i18n="patient_name">Patient Name</small><strong id="dashboardPatientName">--</strong></div>
+                                <div class="patient-mini-detail"><small data-i18n="patient_age">Age</small><strong id="dashboardPatientAge">--</strong></div>
+                            </article>
+                        </div>
+
                         <div class="feature-row">
                             <article class="card feature-card"><p>0_pre-RR</p><strong id="dashPreRR">--</strong><small data-i18n="pre_rr_desc">Preceding RR interval</small></article>
                             <article class="card feature-card"><p>0_post-RR</p><strong id="dashPostRR">--</strong><small data-i18n="post_rr_desc">Following RR interval</small></article>
@@ -156,6 +176,39 @@
                 </div>
             </section>
 
+            <!-- PAGE 3: PATIENT BIODATA -->
+            <section id="patient-page" class="page-section">
+                <div class="page-title">
+                    <p data-i18n="patient_biodata">Patient Biodata</p>
+                    <h3 data-i18n="patient_heading">Patient Information</h3>
+                    <span data-i18n="patient_intro">Enter the name and age of the person using this ECG monitoring system.</span>
+                </div>
+
+                <div class="patient-layout">
+                    <article class="card patient-form-card">
+                        <h4 data-i18n="patient_form_title">Register / Update Patient Biodata</h4>
+                        <form id="patientForm">
+                            <label for="patientName" data-i18n="patient_name">Patient Name</label>
+                            <input id="patientName" name="patientName" type="text" autocomplete="off" placeholder="Patient name" required />
+
+                            <label for="patientAge" data-i18n="patient_age">Age</label>
+                            <input id="patientAge" name="patientAge" type="number" min="0" max="120" placeholder="Age" required />
+
+                            <button type="submit" class="primary-action" data-i18n="save_patient">Save Patient Biodata</button>
+                            <p id="patientFormMessage" class="form-message"></p>
+                        </form>
+                    </article>
+
+                    <article class="card patient-current-card">
+                        <h4 data-i18n="current_patient">Current Patient</h4>
+                        <div class="patient-current-row"><span data-i18n="patient_name">Patient Name</span><strong id="currentPatientName">--</strong></div>
+                        <div class="patient-current-row"><span data-i18n="patient_age">Age</span><strong id="currentPatientAge">--</strong></div>
+                        <div class="patient-current-row"><span data-i18n="registered_at">Registered At</span><strong id="currentPatientCreatedAt">--</strong></div>
+                        <p data-i18n="patient_note">This biodata identifies the person currently using the prototype during testing or demonstration.</p>
+                    </article>
+                </div>
+            </section>
+
             <!-- PAGE 3: LIVE ECG -->
             <section id="live-page" class="page-section">
                 <div class="page-title">
@@ -216,7 +269,7 @@
                 </div>
 
                 <article class="card table-card">
-                    <div class="card-heading"><span data-i18n="recent_records">Recent Records</span><small id="totalRecordText">0 records</small></div>
+                    <div class="card-heading"><span data-i18n="recent_records">Recent Records</span><div class="heading-actions"><button type="button" id="exportExcelButton" class="export-button" data-i18n="export_excel">Export Excel</button><small id="totalRecordText">0 records</small></div></div>
                     <div class="table-wrap">
                         <table>
                             <thead>

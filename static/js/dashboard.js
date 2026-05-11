@@ -3,6 +3,8 @@ const api = {
     history: "/api/history",
     stats: "/api/stats",
     db: "/api/db-status",
+    patient: "/api/patient",
+    exportExcel: "/api/export-excel",
 };
 
 let currentLang = localStorage.getItem("ecgDashboardLang") || "en";
@@ -10,6 +12,7 @@ let latestCache = null;
 let historyCache = [];
 let statsCache = {};
 let dbCache = null;
+let patientCache = null;
 
 const i18n = {
     en: {
@@ -17,6 +20,7 @@ const i18n = {
         brand_subtitle: "Arrhythmia Detection",
         nav_dashboard: "Dashboard",
         nav_team: "Project Team",
+        nav_patient: "Patient Biodata",
         nav_live: "Live ECG",
         nav_prediction: "Prediction",
         nav_history: "History",
@@ -50,6 +54,28 @@ const i18n = {
         team_member_2: "Team Member 2",
         safiah_role: "Hardware Development & Dashboard System",
         guga_role: "Report Documentation & Hardware Development",
+        project_overview: "Project Overview",
+        overview_badge: "ECG + ML + PostgreSQL",
+        overview_text: "This project develops a portable ECG-based arrhythmia monitoring system using AD8232, ESP32, machine learning classification, and PostgreSQL database storage.",
+        overview_point_1: "AD8232 captures ECG signal.",
+        overview_point_2: "ESP32 sends ECG features to the Python bridge.",
+        overview_point_3: "Machine learning classifies NORMAL or ABNORMAL.",
+        overview_point_4: "PostgreSQL stores patient biodata and prediction history.",
+        patient_biodata: "Patient Biodata",
+        update_biodata: "Update",
+        patient_heading: "Patient Information",
+        patient_intro: "Enter the name and age of the person using this ECG monitoring system.",
+        patient_form_title: "Register / Update Patient Biodata",
+        patient_name: "Patient Name",
+        patient_age: "Age",
+        save_patient: "Save Patient Biodata",
+        current_patient: "Current Patient",
+        registered_at: "Registered At",
+        patient_note: "This biodata identifies the person currently using the prototype during testing or demonstration.",
+        patient_saved: "Patient biodata saved successfully.",
+        patient_save_failed: "Unable to save patient biodata.",
+        no_patient: "No patient biodata yet",
+        export_excel: "Export Excel",
         live_ecg: "Live ECG",
         live_heading: "Real-Time ECG Signal / Feature Monitoring",
         live_intro: "This page is used to view incoming ECG trend from AD8232 + ESP32. If raw ECG is not stored, this chart displays real-time extracted feature trend from PostgreSQL.",
@@ -97,6 +123,7 @@ const i18n = {
         brand_subtitle: "Pengesanan Aritmia",
         nav_dashboard: "Papan Pemuka",
         nav_team: "Pasukan Projek",
+        nav_patient: "Biodata Pesakit",
         nav_live: "ECG Langsung",
         nav_prediction: "Ramalan",
         nav_history: "Sejarah",
@@ -130,6 +157,28 @@ const i18n = {
         team_member_2: "Ahli Pasukan 2",
         safiah_role: "Pembangunan Perkakasan & Sistem Dashboard",
         guga_role: "Dokumentasi Laporan & Pembangunan Perkakasan",
+        project_overview: "Gambaran Keseluruhan Projek",
+        overview_badge: "ECG + ML + PostgreSQL",
+        overview_text: "Projek ini membangunkan sistem pemantauan aritmia berasaskan ECG mudah alih menggunakan AD8232, ESP32, klasifikasi machine learning dan penyimpanan data PostgreSQL.",
+        overview_point_1: "AD8232 menangkap isyarat ECG.",
+        overview_point_2: "ESP32 menghantar ciri ECG kepada Python bridge.",
+        overview_point_3: "Machine learning mengklasifikasikan NORMAL atau TIDAK NORMAL.",
+        overview_point_4: "PostgreSQL menyimpan biodata pesakit dan sejarah ramalan.",
+        patient_biodata: "Biodata Pesakit",
+        update_biodata: "Kemaskini",
+        patient_heading: "Maklumat Pesakit",
+        patient_intro: "Masukkan nama dan umur individu yang menggunakan sistem pemantauan ECG ini.",
+        patient_form_title: "Daftar / Kemaskini Biodata Pesakit",
+        patient_name: "Nama Pesakit",
+        patient_age: "Umur",
+        save_patient: "Simpan Biodata Pesakit",
+        current_patient: "Pesakit Semasa",
+        registered_at: "Masa Daftar",
+        patient_note: "Biodata ini mengenal pasti individu yang sedang menggunakan prototaip semasa ujian atau demonstrasi.",
+        patient_saved: "Biodata pesakit berjaya disimpan.",
+        patient_save_failed: "Biodata pesakit tidak berjaya disimpan.",
+        no_patient: "Biodata pesakit belum dimasukkan",
+        export_excel: "Eksport Excel",
         live_ecg: "ECG Langsung",
         live_heading: "Pemantauan Isyarat / Ciri ECG Masa Nyata",
         live_intro: "Halaman ini digunakan untuk melihat trend ECG masuk daripada AD8232 + ESP32. Jika raw ECG tidak disimpan, graf ini memaparkan trend ciri yang diekstrak secara masa nyata daripada PostgreSQL.",
@@ -201,6 +250,7 @@ function applyLanguage(lang) {
     setStats(statsCache && !statsCache.error ? statsCache : {});
     renderRecent(Array.isArray(historyCache) ? historyCache : []);
     renderHistory(Array.isArray(historyCache) ? historyCache : []);
+    setPatient(patientCache && !patientCache.error ? patientCache : null);
     refreshDbStatusLabels();
 }
 
@@ -224,6 +274,9 @@ function initNavigation() {
     document.querySelectorAll(".lang-btn").forEach((button) => {
         button.addEventListener("click", () => applyLanguage(button.dataset.lang));
     });
+
+    initPatientForm();
+    initExportButton();
 
     const hash = window.location.hash.replace("#", "");
     const target = hash ? `${hash}-page` : "dashboard-page";
@@ -320,6 +373,89 @@ function setFeatureValues(data) {
     ["dashRPeak", "predRPeak"].forEach((id) => document.getElementById(id).textContent = rPeak);
     ["dashQRS", "predQRS"].forEach((id) => document.getElementById(id).textContent = qrs);
 }
+
+function setPatient(patient) {
+    const name = patient?.patient_name || "--";
+    const age = patient?.age !== undefined && patient?.age !== null ? String(patient.age) : "--";
+    const createdAt = patient?.created_at || "--";
+
+    const dashboardName = document.getElementById("dashboardPatientName");
+    const dashboardAge = document.getElementById("dashboardPatientAge");
+    const currentName = document.getElementById("currentPatientName");
+    const currentAge = document.getElementById("currentPatientAge");
+    const currentCreatedAt = document.getElementById("currentPatientCreatedAt");
+    const patientNameInput = document.getElementById("patientName");
+    const patientAgeInput = document.getElementById("patientAge");
+
+    if (dashboardName) dashboardName.textContent = name;
+    if (dashboardAge) dashboardAge.textContent = age === "--" ? "--" : `${age} ${currentLang === "ms" ? "tahun" : "years"}`;
+    if (currentName) currentName.textContent = name;
+    if (currentAge) currentAge.textContent = age === "--" ? "--" : `${age} ${currentLang === "ms" ? "tahun" : "years"}`;
+    if (currentCreatedAt) currentCreatedAt.textContent = createdAt;
+
+    if (patient && !patient.error) {
+        if (patientNameInput) patientNameInput.value = patient.patient_name || "";
+        if (patientAgeInput) patientAgeInput.value = patient.age ?? "";
+    }
+}
+
+async function refreshPatient() {
+    try {
+        const res = await fetch(api.patient);
+        patientCache = res.ok ? await res.json() : null;
+    } catch (err) {
+        patientCache = null;
+    }
+    setPatient(patientCache && !patientCache.error ? patientCache : null);
+}
+
+function initPatientForm() {
+    const form = document.getElementById("patientForm");
+    if (!form) return;
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = document.getElementById("patientFormMessage");
+        const patientName = document.getElementById("patientName").value.trim();
+        const age = document.getElementById("patientAge").value;
+
+        if (message) {
+            message.textContent = t("checking");
+            message.className = "form-message";
+        }
+
+        try {
+            const res = await fetch(api.patient, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ patient_name: patientName, age }),
+            });
+            const data = await res.json();
+            if (!res.ok || data.error) throw new Error(data.error || t("patient_save_failed"));
+
+            patientCache = data;
+            setPatient(data);
+            if (message) {
+                message.textContent = t("patient_saved");
+                message.classList.add("success");
+            }
+        } catch (err) {
+            if (message) {
+                message.textContent = err.message || t("patient_save_failed");
+                message.classList.add("error");
+            }
+        }
+    });
+}
+
+function initExportButton() {
+    const button = document.getElementById("exportExcelButton");
+    if (!button) return;
+    button.addEventListener("click", () => {
+        window.location.href = api.exportExcel;
+    });
+}
+
 
 function setStats(stats) {
     const total = Number(stats?.total_predictions || 0);
@@ -551,6 +687,8 @@ async function refreshDashboard() {
 
 initNavigation();
 refreshDbStatus();
+refreshPatient();
 refreshDashboard();
 setInterval(refreshDashboard, 3000);
+setInterval(refreshPatient, 15000);
 setInterval(refreshDbStatus, 8000);

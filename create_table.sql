@@ -10,3 +10,10 @@ CREATE TABLE IF NOT EXISTS ecg_predictions (
     prediction_label VARCHAR(20),
     confidence DOUBLE PRECISION
 );
+
+CREATE TABLE IF NOT EXISTS patients (
+    id SERIAL PRIMARY KEY,
+    patient_name VARCHAR(120) NOT NULL,
+    age INT NOT NULL CHECK (age >= 0 AND age <= 120),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
