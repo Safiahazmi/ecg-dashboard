@@ -14,6 +14,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# =====================================================
+# DATABASE SETTINGS
+# =====================================================
 # Render uses DATABASE_URL. Local PostgreSQL can still use DB_HOST/DB_NAME/etc.
 DATABASE_URL = os.getenv("DATABASE_URL")
 DB_HOST = os.getenv("DB_HOST", "localhost")
@@ -23,14 +26,14 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_PORT = os.getenv("DB_PORT", "5432")
 
 # =====================================================
-# ML / ESP32 WiFi API SETTINGS
+# ML / ESP32 WIFI API SETTINGS
 # =====================================================
-MODEL_PATH = os.getenv("MODEL_PATH", "ecg_hardware_friendly_model.joblib")
+# Use the compressed small model because GitHub browser upload accepts files under 25 MB.
+MODEL_PATH = os.getenv("MODEL_PATH", "ecg_hardware_friendly_model_small.joblib")
 ESP32_API_KEY = os.getenv("ESP32_API_KEY", "").strip()
 
 MODEL_BUNDLE = None
 MODEL_LOAD_ERROR = None
-
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS ecg_predictions (
@@ -52,6 +55,10 @@ CREATE TABLE IF NOT EXISTS patients (
     age INT NOT NULL CHECK (age >= 0 AND age <= 120),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'ESP32_WIFI';
+ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS model_source VARCHAR(80);
+ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS message TEXT;
 """
 
 
@@ -78,6 +85,7 @@ def ensure_table_exists():
         cur.close()
         print("ecg_predictions and patients tables are ready.")
     except Exception as exc:
+        # Do not crash Render during boot if DB is sleeping/unavailable.
         print("Database setup warning:", exc)
     finally:
         if conn:
@@ -133,7 +141,6 @@ def fmt_number(value, decimals=2):
         return ""
 
 
-
 # =====================================================
 # ML MODEL HELPERS FOR ESP32 WIFI MODE
 # =====================================================
@@ -169,12 +176,11 @@ def get_float(payload, *keys):
 def validate_ecg_features(data):
     """
     Validate ECG features before ML prediction.
-    RR and QRS values from ESP32 are in seconds.
-    rPeak is ADC/raw amplitude.
 
-    Prototype validation is intentionally not too strict because arrhythmia
-    can produce irregular RR intervals. We reject only clearly impossible
-    or noisy values.
+    Unit rules:
+    - 0_pre-RR and 0_post-RR are in seconds from ESP32, displayed as ms in dashboard.
+    - 0_qrs_interval is in seconds from ESP32, displayed as ms in dashboard.
+    - 0_rPeak is ADC/raw amplitude.
     """
     pre_rr = data["0_pre-RR"]
     post_rr = data["0_post-RR"]
@@ -182,15 +188,13 @@ def validate_ecg_features(data):
     qrs_interval = data["0_qrs_interval"]
 
     # RR interval in seconds. 0.30–2.00 s is approximately 30–200 BPM.
-    # This accepts your 1.6160 s reading instead of blocking it as WAITING.
     if pre_rr < 0.30 or pre_rr > 2.00:
         return False, f"preRR not realistic: {pre_rr:.4f} s"
 
     if post_rr < 0.30 or post_rr > 2.00:
         return False, f"postRR not realistic: {post_rr:.4f} s"
 
-    # Do not reject pre/post RR differences too aggressively.
-    # RR variation may be part of abnormal rhythm behaviour.
+    # RR variation can happen in arrhythmia, so this is intentionally not too strict.
     if abs(pre_rr - post_rr) > 1.50:
         return False, f"RR interval mismatch too large: preRR={pre_rr:.4f}, postRR={post_rr:.4f}"
 
@@ -211,11 +215,11 @@ def predict_ecg_status(features):
     if bundle is None:
         raise RuntimeError(MODEL_LOAD_ERROR or "Model could not be loaded")
 
-    model = bundle["pipeline"]
+    model = bundle["pipeline"] if isinstance(bundle, dict) and "pipeline" in bundle else bundle
     feature_columns = bundle.get("feature_columns", [
         "0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"
-    ])
-    label_mapping = bundle.get("label_mapping", {0: "Normal", 1: "Abnormal"})
+    ]) if isinstance(bundle, dict) else ["0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"]
+    label_mapping = bundle.get("label_mapping", {0: "Normal", 1: "Abnormal"}) if isinstance(bundle, dict) else {0: "Normal", 1: "Abnormal"}
 
     X = pd.DataFrame([{
         "0_pre-RR": features["0_pre-RR"],
@@ -228,14 +232,27 @@ def predict_ecg_status(features):
     raw_label = str(label_mapping.get(prediction_class, "Abnormal"))
     prediction_label = "NORMAL" if raw_label.lower() == "normal" else "ABNORMAL"
 
-    confidence = None
+    confidence = 0.0
     if hasattr(model, "predict_proba"):
         probabilities = model.predict_proba(X)[0]
         confidence = float(max(probabilities) * 100.0)
-    else:
-        confidence = 0.0
 
     return prediction_class, prediction_label, confidence
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/health")
+def api_health():
+    return jsonify({
+        "status": "OK",
+        "model_path": MODEL_PATH,
+        "model_exists": Path(MODEL_PATH).exists(),
+        "database": "Render PostgreSQL" if DATABASE_URL else DB_NAME,
+    })
 
 
 @app.route("/api/esp32/features", methods=["POST"])
@@ -277,8 +294,8 @@ def api_esp32_features():
             """
             INSERT INTO ecg_predictions
                 (device_id, pre_rr, post_rr, r_peak, qrs_interval,
-                 prediction_class, prediction_label, confidence)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 prediction_class, prediction_label, confidence, source, model_source, message)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING
                 id,
                 to_char(timestamp, 'DD/MM/YYYY, HH24:MI:SS') AS timestamp,
@@ -300,6 +317,9 @@ def api_esp32_features():
                 prediction_class,
                 prediction_label,
                 confidence,
+                "ESP32_WIFI",
+                MODEL_PATH,
+                "Prediction saved from ESP32 WiFi API",
             ),
             fetch_one=True,
         )
@@ -315,11 +335,6 @@ def api_esp32_features():
 
     except Exception as exc:
         return jsonify({"status": "ERROR", "message": str(exc)}), 500
-
-
-@app.route("/")
-def index():
-    return render_template("index.html")
 
 
 @app.route("/api/latest")
