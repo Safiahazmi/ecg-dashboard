@@ -169,29 +169,37 @@ def get_float(payload, *keys):
 def validate_ecg_features(data):
     """
     Validate ECG features before ML prediction.
-    This prevents invalid/noisy signals from being stored as NORMAL.
+    RR and QRS values from ESP32 are in seconds.
+    rPeak is ADC/raw amplitude.
+
+    Prototype validation is intentionally not too strict because arrhythmia
+    can produce irregular RR intervals. We reject only clearly impossible
+    or noisy values.
     """
     pre_rr = data["0_pre-RR"]
     post_rr = data["0_post-RR"]
     r_peak = data["0_rPeak"]
     qrs_interval = data["0_qrs_interval"]
 
-    # RR interval is in seconds from ESP32. 0.50–1.50 s = around 40–120 bpm.
-    if pre_rr < 0.50 or pre_rr > 1.50:
+    # RR interval in seconds. 0.30–2.00 s is approximately 30–200 BPM.
+    # This accepts your 1.6160 s reading instead of blocking it as WAITING.
+    if pre_rr < 0.30 or pre_rr > 2.00:
         return False, f"preRR not realistic: {pre_rr:.4f} s"
 
-    if post_rr < 0.50 or post_rr > 1.50:
+    if post_rr < 0.30 or post_rr > 2.00:
         return False, f"postRR not realistic: {post_rr:.4f} s"
 
-    if abs(pre_rr - post_rr) > 0.30:
-        return False, f"RR interval unstable: preRR={pre_rr:.4f}, postRR={post_rr:.4f}"
+    # Do not reject pre/post RR differences too aggressively.
+    # RR variation may be part of abnormal rhythm behaviour.
+    if abs(pre_rr - post_rr) > 1.50:
+        return False, f"RR interval mismatch too large: preRR={pre_rr:.4f}, postRR={post_rr:.4f}"
 
-    # ESP32 ADC is 0–4095. This keeps obvious flat/noisy readings out.
-    if r_peak < 800 or r_peak > 3500:
+    # ESP32 ADC is 0–4095. Keep obvious flat/noisy readings out.
+    if r_peak < 300 or r_peak > 4095:
         return False, f"rPeak not valid: {r_peak:.2f} ADC"
 
-    # QRS is in seconds from ESP32. 0.04–0.18 s = 40–180 ms.
-    if qrs_interval < 0.04 or qrs_interval > 0.18:
+    # QRS interval in seconds. 0.04–0.20 s = 40–200 ms.
+    if qrs_interval < 0.04 or qrs_interval > 0.20:
         return False, f"QRS interval not valid: {qrs_interval:.4f} s"
 
     return True, "Valid ECG features"
