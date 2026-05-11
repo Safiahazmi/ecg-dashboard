@@ -1,6 +1,10 @@
 import csv
 import io
 import os
+from pathlib import Path
+
+import pandas as pd
+from joblib import load
 from flask import Flask, render_template, jsonify, request, Response
 from dotenv import load_dotenv
 import psycopg2
@@ -17,6 +21,16 @@ DB_NAME = os.getenv("DB_NAME", "ecg_db")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_PORT = os.getenv("DB_PORT", "5432")
+
+# =====================================================
+# ML / ESP32 WiFi API SETTINGS
+# =====================================================
+MODEL_PATH = os.getenv("MODEL_PATH", "ecg_hardware_friendly_model.joblib")
+ESP32_API_KEY = os.getenv("ESP32_API_KEY", "").strip()
+
+MODEL_BUNDLE = None
+MODEL_LOAD_ERROR = None
+
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS ecg_predictions (
@@ -117,6 +131,182 @@ def fmt_number(value, decimals=2):
         return f"{float(value):.{decimals}f}"
     except (TypeError, ValueError):
         return ""
+
+
+
+# =====================================================
+# ML MODEL HELPERS FOR ESP32 WIFI MODE
+# =====================================================
+def load_model_bundle():
+    """Load the trained ECG ML model once when the ESP32 WiFi API is used."""
+    global MODEL_BUNDLE, MODEL_LOAD_ERROR
+
+    if MODEL_BUNDLE is not None:
+        return MODEL_BUNDLE
+
+    model_file = Path(MODEL_PATH)
+    if not model_file.exists():
+        MODEL_LOAD_ERROR = f"Model file not found: {MODEL_PATH}"
+        return None
+
+    try:
+        MODEL_BUNDLE = load(model_file)
+        MODEL_LOAD_ERROR = None
+        print(f"ECG ML model loaded: {MODEL_PATH}")
+        return MODEL_BUNDLE
+    except Exception as exc:
+        MODEL_LOAD_ERROR = str(exc)
+        return None
+
+
+def get_float(payload, *keys):
+    for key in keys:
+        if key in payload and payload.get(key) is not None:
+            return float(payload.get(key))
+    raise ValueError(f"Missing required value: {keys[0]}")
+
+
+def validate_ecg_features(data):
+    """
+    Validate ECG features before ML prediction.
+    This prevents invalid/noisy signals from being stored as NORMAL.
+    """
+    pre_rr = data["0_pre-RR"]
+    post_rr = data["0_post-RR"]
+    r_peak = data["0_rPeak"]
+    qrs_interval = data["0_qrs_interval"]
+
+    # RR interval is in seconds from ESP32. 0.50–1.50 s = around 40–120 bpm.
+    if pre_rr < 0.50 or pre_rr > 1.50:
+        return False, f"preRR not realistic: {pre_rr:.4f} s"
+
+    if post_rr < 0.50 or post_rr > 1.50:
+        return False, f"postRR not realistic: {post_rr:.4f} s"
+
+    if abs(pre_rr - post_rr) > 0.30:
+        return False, f"RR interval unstable: preRR={pre_rr:.4f}, postRR={post_rr:.4f}"
+
+    # ESP32 ADC is 0–4095. This keeps obvious flat/noisy readings out.
+    if r_peak < 800 or r_peak > 3500:
+        return False, f"rPeak not valid: {r_peak:.2f} ADC"
+
+    # QRS is in seconds from ESP32. 0.04–0.18 s = 40–180 ms.
+    if qrs_interval < 0.04 or qrs_interval > 0.18:
+        return False, f"QRS interval not valid: {qrs_interval:.4f} s"
+
+    return True, "Valid ECG features"
+
+
+def predict_ecg_status(features):
+    """Run the hardware-friendly trained model and return class, label, confidence."""
+    bundle = load_model_bundle()
+    if bundle is None:
+        raise RuntimeError(MODEL_LOAD_ERROR or "Model could not be loaded")
+
+    model = bundle["pipeline"]
+    feature_columns = bundle.get("feature_columns", [
+        "0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"
+    ])
+    label_mapping = bundle.get("label_mapping", {0: "Normal", 1: "Abnormal"})
+
+    X = pd.DataFrame([{
+        "0_pre-RR": features["0_pre-RR"],
+        "0_post-RR": features["0_post-RR"],
+        "0_rPeak": features["0_rPeak"],
+        "0_qrs_interval": features["0_qrs_interval"],
+    }])[feature_columns]
+
+    prediction_class = int(model.predict(X)[0])
+    raw_label = str(label_mapping.get(prediction_class, "Abnormal"))
+    prediction_label = "NORMAL" if raw_label.lower() == "normal" else "ABNORMAL"
+
+    confidence = None
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba(X)[0]
+        confidence = float(max(probabilities) * 100.0)
+    else:
+        confidence = 0.0
+
+    return prediction_class, prediction_label, confidence
+
+
+@app.route("/api/esp32/features", methods=["POST"])
+def api_esp32_features():
+    """
+    Direct ESP32 WiFi endpoint.
+    ESP32 sends extracted ECG features here using HTTP POST.
+    Server runs ML prediction, stores result into PostgreSQL, and returns NORMAL/ABNORMAL.
+    """
+    payload = request.get_json(silent=True) or {}
+
+    if ESP32_API_KEY:
+        provided_key = request.headers.get("X-API-Key", "") or str(payload.get("api_key", ""))
+        if provided_key != ESP32_API_KEY:
+            return jsonify({"status": "UNAUTHORIZED", "message": "Invalid ESP32 API key"}), 401
+
+    try:
+        lo_plus = int(payload.get("lo_plus", payload.get("LO_PLUS", 0)) or 0)
+        lo_minus = int(payload.get("lo_minus", payload.get("LO_MINUS", 0)) or 0)
+        device_id = str(payload.get("device_id", "ESP32_AD8232_01"))
+
+        if lo_plus == 1 or lo_minus == 1:
+            return jsonify({"status": "LEADS_OFF", "message": "Check ECG electrodes"}), 200
+
+        features = {
+            "0_pre-RR": get_float(payload, "0_pre-RR", "pre_rr", "preRR"),
+            "0_post-RR": get_float(payload, "0_post-RR", "post_rr", "postRR"),
+            "0_rPeak": get_float(payload, "0_rPeak", "r_peak", "rPeak"),
+            "0_qrs_interval": get_float(payload, "0_qrs_interval", "qrs_interval", "qrsInterval"),
+        }
+
+        is_valid, validation_message = validate_ecg_features(features)
+        if not is_valid:
+            return jsonify({"status": "WAITING", "message": validation_message}), 200
+
+        prediction_class, prediction_label, confidence = predict_ecg_status(features)
+
+        row = execute_db(
+            """
+            INSERT INTO ecg_predictions
+                (device_id, pre_rr, post_rr, r_peak, qrs_interval,
+                 prediction_class, prediction_label, confidence)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING
+                id,
+                to_char(timestamp, 'DD/MM/YYYY, HH24:MI:SS') AS timestamp,
+                device_id,
+                pre_rr,
+                post_rr,
+                r_peak,
+                qrs_interval,
+                prediction_class,
+                prediction_label,
+                confidence;
+            """,
+            (
+                device_id,
+                features["0_pre-RR"],
+                features["0_post-RR"],
+                features["0_rPeak"],
+                features["0_qrs_interval"],
+                prediction_class,
+                prediction_label,
+                confidence,
+            ),
+            fetch_one=True,
+        )
+
+        return jsonify({
+            "status": prediction_label,
+            "prediction_label": prediction_label,
+            "prediction_class": prediction_class,
+            "confidence": confidence,
+            "message": "Prediction saved to PostgreSQL",
+            "saved_record": row,
+        }), 201
+
+    except Exception as exc:
+        return jsonify({"status": "ERROR", "message": str(exc)}), 500
 
 
 @app.route("/")
