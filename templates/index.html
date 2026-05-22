@@ -21,7 +21,6 @@
                 <button class="nav-item active" data-target="dashboard-page"><span>▦</span><b data-i18n="nav_dashboard">Dashboard</b></button>
                 <button class="nav-item" data-target="team-page"><span>👥</span><b data-i18n="nav_team">Project Team</b></button>
                 <button class="nav-item" data-target="patient-page"><span>▣</span><b data-i18n="nav_patient">Patient Biodata</b></button>
-                <button class="nav-item" data-target="live-page"><span>⌁</span><b data-i18n="nav_live">Live ECG</b></button>
                 <button class="nav-item" data-target="prediction-page"><span>◎</span><b data-i18n="nav_prediction">Prediction</b></button>
                 <button class="nav-item" data-target="history-page"><span>◴</span><b data-i18n="nav_history">History</b></button>
                 <button class="nav-item" data-target="database-page"><span>◉</span><b data-i18n="nav_database">Database</b></button>
@@ -79,6 +78,14 @@
                                         <small data-i18n="device">Device</small>
                                         <strong id="dashboardDeviceId">--</strong>
                                     </div>
+                                    <div>
+                                        <small data-i18n="heart_rate">Heart Rate</small>
+                                        <strong id="dashboardHeartRate">--</strong>
+                                    </div>
+                                    <div>
+                                        <small data-i18n="heart_rate_status">Heart Rate Status</small>
+                                        <strong id="dashboardHeartRateStatus">--</strong>
+                                    </div>
                                 </div>
                             </article>
 
@@ -117,18 +124,10 @@
                             <article class="card feature-card"><p>0_post-RR</p><strong id="dashPostRR">--</strong><small data-i18n="post_rr_desc">Following RR interval</small></article>
                             <article class="card feature-card"><p>0_rPeak</p><strong id="dashRPeak">--</strong><small data-i18n="rpeak_desc">R peak raw amplitude</small></article>
                             <article class="card feature-card"><p>0_qrs_interval</p><strong id="dashQRS">--</strong><small data-i18n="qrs_desc">QRS duration</small></article>
+                            <article class="card feature-card heart-rate-feature"><p data-i18n="heart_rate">Heart Rate</p><strong id="dashHeartRate">--</strong><small data-i18n="heart_rate_desc">Calculated from RR interval</small></article>
                         </div>
 
                         <div class="bottom-grid">
-                            <article class="card chart-card">
-                                <div class="card-heading"><span data-i18n="feature_trend">ECG Feature Trend</span><small><span data-i18n="auto_refresh">Auto refresh</span>: 3s</small></div>
-                                <svg id="dashboardChart" viewBox="0 0 850 270" preserveAspectRatio="none"></svg>
-                                <div class="chart-legend">
-                                    <span><b class="legend-purple"></b><i data-i18n="time_trend">RR/QRS time trend</i></span>
-                                    <span><b class="legend-green"></b><i data-i18n="rpeak_trend">R-peak trend</i></span>
-                                </div>
-                            </article>
-
                             <article class="card recent-card">
                                 <div class="card-heading"><span data-i18n="recent_prediction_history">Recent Prediction History</span><button class="text-button" data-target="history-page" data-i18n="view_all">View All</button></div>
                                 <div class="recent-list" id="recentList"></div>
@@ -209,29 +208,7 @@
                 </div>
             </section>
 
-            <!-- PAGE 3: LIVE ECG -->
-            <section id="live-page" class="page-section">
-                <div class="page-title">
-                    <p data-i18n="live_ecg">Live ECG</p>
-                    <h3 data-i18n="live_heading">Real-Time ECG Signal / Feature Monitoring</h3>
-                    <span data-i18n="live_intro">This page is used to view incoming ECG trend from AD8232 + ESP32. If raw ECG is not stored, this chart displays real-time extracted feature trend from PostgreSQL.</span>
-                </div>
-
-                <div class="live-layout">
-                    <article class="card wide-chart">
-                        <div class="card-heading"><span data-i18n="ecg_trend">ECG Trend</span><small>25 mm/s · 10 mm/mV · <i data-i18n="live_status">Live</i></small></div>
-                        <svg id="liveChart" viewBox="0 0 980 360" preserveAspectRatio="none"></svg>
-                    </article>
-                    <article class="card unit-note">
-                        <h4 data-i18n="unit_guide">Feature Unit Guide</h4>
-                        <p data-i18n="unit_pre_post"><b>0_pre-RR</b> and <b>0_post-RR</b> are RR interval timing features. They are displayed in <b>milliseconds (ms)</b>.</p>
-                        <p data-i18n="unit_qrs"><b>0_qrs_interval</b> is QRS duration. It is displayed in <b>milliseconds (ms)</b>.</p>
-                        <p data-i18n="unit_rpeak"><b>0_rPeak</b> is the detected ECG peak amplitude from hardware. It is displayed as <b>ADC/raw amplitude</b>, not ms.</p>
-                    </article>
-                </div>
-            </section>
-
-            <!-- PAGE 4: PREDICTION -->
+            <!-- PAGE 3: PREDICTION -->
             <section id="prediction-page" class="page-section">
                 <div class="page-title">
                     <p data-i18n="prediction">Prediction</p>
@@ -247,6 +224,8 @@
                         <div class="classification-meta">
                             <div><small data-i18n="confidence">Confidence</small><strong id="predictionConfidence">--</strong></div>
                             <div><small data-i18n="last_update">Last Update</small><strong id="predictionLastUpdate">--</strong></div>
+                            <div><small data-i18n="heart_rate">Heart Rate</small><strong id="predictionHeartRate">--</strong></div>
+                            <div><small data-i18n="heart_rate_status">Heart Rate Status</small><strong id="predictionHeartRateStatus">--</strong></div>
                         </div>
                     </article>
 
@@ -256,11 +235,12 @@
                         <div class="feature-detail"><span>0_post-RR</span><strong id="predPostRR">--</strong></div>
                         <div class="feature-detail"><span>0_rPeak</span><strong id="predRPeak">--</strong></div>
                         <div class="feature-detail"><span>0_qrs_interval</span><strong id="predQRS">--</strong></div>
+                        <div class="feature-detail"><span data-i18n="heart_rate">Heart Rate</span><strong id="predHeartRate">--</strong></div>
                     </article>
                 </div>
             </section>
 
-            <!-- PAGE 5: HISTORY -->
+            <!-- PAGE 4: HISTORY -->
             <section id="history-page" class="page-section">
                 <div class="page-title">
                     <p data-i18n="history">History</p>
@@ -279,19 +259,21 @@
                                     <th>0_post-RR</th>
                                     <th>0_rPeak</th>
                                     <th>0_qrs_interval</th>
+                                    <th data-i18n="heart_rate">Heart Rate</th>
+                                    <th data-i18n="heart_rate_status">Heart Rate Status</th>
                                     <th data-i18n="prediction">Prediction</th>
                                     <th data-i18n="confidence">Confidence</th>
                                 </tr>
                             </thead>
                             <tbody id="historyBody">
-                                <tr><td colspan="7" class="empty-row" data-i18n="no_data_yet">No data yet</td></tr>
+                                <tr><td colspan="9" class="empty-row" data-i18n="no_data_yet">No data yet</td></tr>
                             </tbody>
                         </table>
                     </div>
                 </article>
             </section>
 
-            <!-- PAGE 6: DATABASE -->
+            <!-- PAGE 5: DATABASE -->
             <section id="database-page" class="page-section">
                 <div class="page-title">
                     <p data-i18n="database">Database</p>

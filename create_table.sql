@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS ecg_predictions (
     post_rr DOUBLE PRECISION,
     r_peak DOUBLE PRECISION,
     qrs_interval DOUBLE PRECISION,
+    heart_rate DOUBLE PRECISION,
     prediction_class INT,
     prediction_label VARCHAR(20),
     confidence DOUBLE PRECISION
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS patients (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS heart_rate DOUBLE PRECISION;
 ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'ESP32_WIFI';
 ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS model_source VARCHAR(80);
 ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS message TEXT;

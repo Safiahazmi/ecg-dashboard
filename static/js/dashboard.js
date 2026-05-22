@@ -39,6 +39,11 @@ const i18n = {
         post_rr_desc: "Following RR interval",
         rpeak_desc: "R peak raw amplitude",
         qrs_desc: "QRS duration",
+        heart_rate: "Heart Rate",
+        heart_rate_desc: "Calculated from RR interval",
+        heart_rate_status: "Heart Rate Status",
+        normal_rate: "Normal",
+        abnormal_rate: "Abnormal",
         feature_trend: "ECG Feature Trend",
         auto_refresh: "Auto refresh",
         time_trend: "RR/QRS time trend",
@@ -89,7 +94,7 @@ const i18n = {
         prediction_intro: "The dashboard displays the result already predicted by the trained machine learning model.",
         latest_prediction: "Latest Prediction",
         confidence: "Confidence",
-        features_used: "Features Used by Model",
+        features_used: "ECG Values & Heart Rate",
         history: "History",
         history_heading: "Stored Prediction Records",
         history_intro: "Prediction history is read from PostgreSQL. Normal and Abnormal results are kept for monitoring records.",
@@ -142,6 +147,11 @@ const i18n = {
         post_rr_desc: "Selang RR selepas denyutan semasa",
         rpeak_desc: "Amplitud mentah puncak R",
         qrs_desc: "Tempoh QRS",
+        heart_rate: "Kadar Denyutan Jantung",
+        heart_rate_desc: "Dikira daripada selang RR",
+        heart_rate_status: "Status Kadar Denyutan",
+        normal_rate: "Normal",
+        abnormal_rate: "Tidak Normal",
         feature_trend: "Trend Ciri ECG",
         auto_refresh: "Auto segar semula",
         time_trend: "Trend masa RR/QRS",
@@ -192,7 +202,7 @@ const i18n = {
         prediction_intro: "Dashboard memaparkan keputusan yang telah diramal oleh model machine learning yang dilatih.",
         latest_prediction: "Ramalan Terkini",
         confidence: "Keyakinan",
-        features_used: "Ciri yang Digunakan oleh Model",
+        features_used: "Nilai ECG & Kadar Denyutan",
         history: "Sejarah",
         history_heading: "Rekod Ramalan yang Disimpan",
         history_intro: "Sejarah ramalan dibaca daripada PostgreSQL. Keputusan Normal dan Tidak Normal disimpan sebagai rekod pemantauan.",
@@ -247,6 +257,7 @@ function applyLanguage(lang) {
     });
 
     setClassification(latestCache && !latestCache.error ? latestCache : null);
+    setFeatureValues(latestCache && !latestCache.error ? latestCache : null);
     setStats(statsCache && !statsCache.error ? statsCache : {});
     renderRecent(Array.isArray(historyCache) ? historyCache : []);
     renderHistory(Array.isArray(historyCache) ? historyCache : []);
@@ -318,6 +329,46 @@ function formatConfidence(value) {
     return `${Number(value).toFixed(1)}%`;
 }
 
+function safeSetText(id, value) {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value;
+}
+
+function getHeartRateValue(data) {
+    const provided = Number(data?.heart_rate);
+    if (Number.isFinite(provided) && provided > 0) return provided;
+
+    const intervals = [Number(data?.pre_rr), Number(data?.post_rr)].filter((value) => Number.isFinite(value) && value > 0);
+    if (intervals.length === 0) return null;
+
+    const averageRR = intervals.reduce((total, value) => total + value, 0) / intervals.length;
+    if (!averageRR) return null;
+
+    const bpm = 60 / averageRR;
+    return Number.isFinite(bpm) ? bpm : null;
+}
+
+function formatHeartRate(data) {
+    const bpm = getHeartRateValue(data);
+    if (bpm === null) return "--";
+    return `${bpm.toFixed(0)} BPM`;
+}
+
+function getHeartRateStatus(data) {
+    const bpm = getHeartRateValue(data);
+    if (bpm === null) return { label: "--", type: "waiting" };
+    const isNormal = bpm >= 60 && bpm <= 100;
+    return { label: isNormal ? t("normal_rate") : t("abnormal_rate"), type: isNormal ? "normal" : "abnormal" };
+}
+
+function applyHeartRateStatusStyle(id, status) {
+    const element = document.getElementById(id);
+    if (!element) return;
+    element.textContent = status.label;
+    element.classList.remove("hr-normal", "hr-abnormal", "hr-waiting");
+    element.classList.add(status.type === "normal" ? "hr-normal" : status.type === "abnormal" ? "hr-abnormal" : "hr-waiting");
+}
+
 function setPredictionStyle(label) {
     const displayLabel = cleanLabel(label);
     const raw = rawLabel(label);
@@ -367,11 +418,16 @@ function setFeatureValues(data) {
     const postRR = formatTimeMs(data?.post_rr);
     const rPeak = formatRPeak(data?.r_peak);
     const qrs = formatTimeMs(data?.qrs_interval);
+    const heartRate = formatHeartRate(data);
+    const heartRateStatus = getHeartRateStatus(data);
 
-    ["dashPreRR", "predPreRR"].forEach((id) => document.getElementById(id).textContent = preRR);
-    ["dashPostRR", "predPostRR"].forEach((id) => document.getElementById(id).textContent = postRR);
-    ["dashRPeak", "predRPeak"].forEach((id) => document.getElementById(id).textContent = rPeak);
-    ["dashQRS", "predQRS"].forEach((id) => document.getElementById(id).textContent = qrs);
+    ["dashPreRR", "predPreRR"].forEach((id) => safeSetText(id, preRR));
+    ["dashPostRR", "predPostRR"].forEach((id) => safeSetText(id, postRR));
+    ["dashRPeak", "predRPeak"].forEach((id) => safeSetText(id, rPeak));
+    ["dashQRS", "predQRS"].forEach((id) => safeSetText(id, qrs));
+    ["dashHeartRate", "predHeartRate", "dashboardHeartRate", "predictionHeartRate"].forEach((id) => safeSetText(id, heartRate));
+    applyHeartRateStatusStyle("dashboardHeartRateStatus", heartRateStatus);
+    applyHeartRateStatusStyle("predictionHeartRateStatus", heartRateStatus);
 }
 
 function setPatient(patient) {
@@ -490,7 +546,7 @@ function renderRecent(rows) {
         div.className = "recent-row";
         div.innerHTML = `
             <span class="pulse-dot" style="background:${dotColor}; box-shadow:0 0 16px ${dotColor}"></span>
-            <div><strong>${row.timestamp || "--"}</strong><small>${formatTimeMs(row.pre_rr)} · ${formatTimeMs(row.qrs_interval)}</small></div>
+            <div><strong>${row.timestamp || "--"}</strong><small>${formatHeartRate(row)} · ${formatTimeMs(row.qrs_interval)}</small></div>
             <span class="pred-badge ${type}">${label}</span>
         `;
         container.appendChild(div);
@@ -501,7 +557,7 @@ function renderHistory(rows) {
     const body = document.getElementById("historyBody");
     body.innerHTML = "";
     if (!rows || rows.length === 0) {
-        body.innerHTML = `<tr><td colspan="7" class="empty-row">${t("no_data_yet")}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="9" class="empty-row">${t("no_data_yet")}</td></tr>`;
         return;
     }
 
@@ -509,6 +565,7 @@ function renderHistory(rows) {
         const raw = rawLabel(row.prediction_label);
         const label = cleanLabel(row.prediction_label);
         const type = raw === "ABNORMAL" ? "abnormal" : "normal";
+        const heartRateStatus = getHeartRateStatus(row);
         const tr = document.createElement("tr");
         tr.innerHTML = `
             <td>${row.timestamp || "--"}</td>
@@ -516,6 +573,8 @@ function renderHistory(rows) {
             <td>${formatTimeMs(row.post_rr)}</td>
             <td>${formatRPeak(row.r_peak)}</td>
             <td>${formatTimeMs(row.qrs_interval)}</td>
+            <td>${formatHeartRate(row)}</td>
+            <td><span class="pred-badge ${heartRateStatus.type === "abnormal" ? "abnormal" : heartRateStatus.type === "normal" ? "normal" : "waiting"}">${heartRateStatus.label}</span></td>
             <td><span class="pred-badge ${type}">${label}</span></td>
             <td>${formatConfidence(row.confidence)}</td>
         `;

@@ -17,7 +17,7 @@ const char* WIFI_PASSWORD = "safiah123";
 
 // Replace this with your real Render dashboard URL.
 // Example: https://ecg-dashboard-xxxx.onrender.com/api/esp32/features
-const char* SERVER_URL = "https://YOUR-RENDER-DASHBOARD-LINK.onrender.com/api/esp32/features";
+const char* SERVER_URL = "https://ecg-dashboard-jf8e.onrender.com/api/esp32/features";
 
 // Optional security key. If you set ESP32_API_KEY in Render, use the same value here.
 // If you do not set ESP32_API_KEY in Render, this can stay empty.
@@ -101,6 +101,7 @@ float qrsInterval = 0.08;   // 0_qrs_interval in seconds
 
 float previousRR = 0.0;
 float currentRR = 0.0;
+float lastValidRR = 0.0;   // stores last accepted RR interval only
 
 int bpm = 0;
 bool featureReady = false;
@@ -250,6 +251,7 @@ void sendFeaturesToRender() {
   payload += "\"post_rr\":" + String(postRR, 4) + ",";
   payload += "\"r_peak\":" + String(rPeak, 2) + ",";
   payload += "\"qrs_interval\":" + String(qrsInterval, 4) + ",";
+  payload += "\"heart_rate\":" + String(bpm) + ",";
   payload += "\"lo_plus\":" + String(leadOffPlus) + ",";
   payload += "\"lo_minus\":" + String(leadOffMinus);
   payload += "}";
@@ -404,19 +406,33 @@ void detectRPeak(unsigned long currentTime) {
     lastRIndex = waveformIndex;
 
     if (lastRPeakTime > 0) {
-      previousRR = currentRR;
       currentRR = (currentTime - lastRPeakTime) / 1000.0;
 
-      if (currentRR > 0.4 && currentRR < 1.6) {
-        preRR = previousRR;
-        postRR = currentRR;
+      // Accept realistic RR interval only.
+      // If one invalid beat occurs, do not reuse it as preRR later.
+      if (currentRR > 0.3 && currentRR < 2.0) {
+        if (lastValidRR > 0.3 && lastValidRR < 2.0) {
+          preRR = lastValidRR;
+          postRR = currentRR;
 
-        bpm = (int)(60.0 / currentRR);
-        qrsInterval = estimateQRSInterval();
-
-        if (preRR > 0.0 && postRR > 0.0) {
+          bpm = (int)(60.0 / currentRR);
+          qrsInterval = estimateQRSInterval();
           featureReady = true;
+        } else {
+          featureReady = false;   // need one more valid beat before sending features
         }
+
+        previousRR = lastValidRR;
+        lastValidRR = currentRR;
+      } else {
+        // Invalid RR interval: reset feature readiness so 4s/5s intervals are not sent.
+        featureReady = false;
+        previousRR = 0.0;
+        currentRR = 0.0;
+        lastValidRR = 0.0;
+        preRR = 0.0;
+        postRR = 0.0;
+        serverMessage = "Waiting valid RR";
       }
     }
 
@@ -426,8 +442,8 @@ void detectRPeak(unsigned long currentTime) {
 
 // =====================================================
 // UPDATE OLED DISPLAY
-// Only title + Beat status.
-// No waveform, no BPM, no ECG value.
+// Only title + heart rate + ML status.
+// No waveform is displayed.
 // =====================================================
 void updateOLED() {
   display.clearDisplay();
@@ -443,7 +459,6 @@ void updateOLED() {
     drawHeart(118, 8, 5, false);
   }
 
-  display.setTextSize(1);
   display.setCursor(0, 16);
   display.print("WiFi:");
   if (WiFi.status() == WL_CONNECTED) {
@@ -457,36 +472,33 @@ void updateOLED() {
   display.print(lastHttpCode);
 
   display.setCursor(0, 28);
-  display.print("Beat:");
+  display.print("HR:");
+  if (bpm > 0) {
+    display.print(bpm);
+    display.print(" BPM");
+  } else {
+    display.print("-- BPM");
+  }
+
+  display.setCursor(0, 40);
+  display.print("Result:");
 
   if (leadOffPlus == 1 || leadOffMinus == 1 || mlStatus == "LEADS_OFF") {
-    display.setTextSize(1);
-    display.setCursor(38, 28);
+    display.setCursor(46, 40);
     display.print("LEADS OFF");
-
-    display.setCursor(10, 44);
+    display.setCursor(0, 54);
     display.print("Check electrodes");
-
-    display.setCursor(36, 56);
-    display.print("RA LA RL");
-
     display.display();
     return;
   }
 
+  display.setCursor(46, 40);
   if (mlStatus == "NORMAL") {
-    display.setTextSize(2);
-    display.setCursor(22, 42);
     display.print("NORMAL");
   } else if (mlStatus == "ABNORMAL") {
-    display.setTextSize(2);
-    display.setCursor(5, 42);
     display.print("ABNORMAL");
   } else {
-    display.setTextSize(1);
-    display.setCursor(38, 40);
-    display.print("WAITING ML");
-
+    display.print("WAITING");
     display.setCursor(0, 54);
     display.print(serverMessage.substring(0, 20));
   }
@@ -572,6 +584,20 @@ void loop() {
 
     if (leadOffPlus == 0 && leadOffMinus == 0) {
       detectRPeak(currentTime);
+
+      // If no valid R-peak is detected for too long, wait instead of sending stale features.
+      if (lastRPeakTime > 0 && (currentTime - lastRPeakTime > 2500)) {
+        featureReady = false;
+        preRR = 0.0;
+        postRR = 0.0;
+        rPeak = 0.0;
+        qrsInterval = 0.08;
+        previousRR = 0.0;
+        currentRR = 0.0;
+        lastValidRR = 0.0;
+        mlStatus = "WAITING";
+        serverMessage = "Waiting valid ECG";
+      }
     } else {
       featureReady = false;
       bpm = 0;
@@ -579,6 +605,9 @@ void loop() {
       postRR = 0.0;
       rPeak = 0.0;
       qrsInterval = 0.08;
+      previousRR = 0.0;
+      currentRR = 0.0;
+      lastValidRR = 0.0;
       mlStatus = "LEADS_OFF";
       serverMessage = "Check electrodes";
     }

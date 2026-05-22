@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS ecg_predictions (
     post_rr DOUBLE PRECISION,
     r_peak DOUBLE PRECISION,
     qrs_interval DOUBLE PRECISION,
+    heart_rate DOUBLE PRECISION,
     prediction_class INT,
     prediction_label VARCHAR(20),
     confidence DOUBLE PRECISION
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS patients (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS heart_rate DOUBLE PRECISION;
 ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'ESP32_WIFI';
 ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS model_source VARCHAR(80);
 ALTER TABLE ecg_predictions ADD COLUMN IF NOT EXISTS message TEXT;
@@ -139,6 +141,41 @@ def fmt_number(value, decimals=2):
         return f"{float(value):.{decimals}f}"
     except (TypeError, ValueError):
         return ""
+
+
+def get_optional_float(payload, *keys):
+    for key in keys:
+        if key in payload and payload.get(key) is not None and str(payload.get(key)).strip() != "":
+            try:
+                return float(payload.get(key))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def calculate_heart_rate(pre_rr, post_rr=None):
+    """Calculate heart rate in BPM from valid RR interval values in seconds."""
+    intervals = []
+    for value in (pre_rr, post_rr):
+        try:
+            rr = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 0.30 <= rr <= 2.00:
+            intervals.append(rr)
+
+    if not intervals:
+        return None
+
+    average_rr = sum(intervals) / len(intervals)
+    if average_rr <= 0:
+        return None
+
+    bpm = 60.0 / average_rr
+    if bpm < 20 or bpm > 250:
+        return None
+
+    return round(bpm, 2)
 
 
 # =====================================================
@@ -288,14 +325,20 @@ def api_esp32_features():
         if not is_valid:
             return jsonify({"status": "WAITING", "message": validation_message}), 200
 
+        received_heart_rate = get_optional_float(payload, "heart_rate", "heartRate", "bpm", "BPM")
+        heart_rate = received_heart_rate if received_heart_rate and 20 <= received_heart_rate <= 250 else calculate_heart_rate(
+            features["0_pre-RR"],
+            features["0_post-RR"],
+        )
+
         prediction_class, prediction_label, confidence = predict_ecg_status(features)
 
         row = execute_db(
             """
             INSERT INTO ecg_predictions
-                (device_id, pre_rr, post_rr, r_peak, qrs_interval,
+                (device_id, pre_rr, post_rr, r_peak, qrs_interval, heart_rate,
                  prediction_class, prediction_label, confidence, source, model_source, message)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING
                 id,
                 to_char(timestamp, 'DD/MM/YYYY, HH24:MI:SS') AS timestamp,
@@ -304,6 +347,7 @@ def api_esp32_features():
                 post_rr,
                 r_peak,
                 qrs_interval,
+                heart_rate,
                 prediction_class,
                 prediction_label,
                 confidence;
@@ -314,6 +358,7 @@ def api_esp32_features():
                 features["0_post-RR"],
                 features["0_rPeak"],
                 features["0_qrs_interval"],
+                heart_rate,
                 prediction_class,
                 prediction_label,
                 confidence,
@@ -329,6 +374,7 @@ def api_esp32_features():
             "prediction_label": prediction_label,
             "prediction_class": prediction_class,
             "confidence": confidence,
+            "heart_rate": heart_rate,
             "message": "Prediction saved to PostgreSQL",
             "saved_record": row,
         }), 201
@@ -350,6 +396,12 @@ def api_latest():
                 post_rr,
                 r_peak,
                 qrs_interval,
+                CASE
+                    WHEN heart_rate IS NOT NULL THEN heart_rate
+                    WHEN pre_rr IS NOT NULL AND post_rr IS NOT NULL AND ((pre_rr + post_rr) / 2.0) > 0 THEN 60.0 / ((pre_rr + post_rr) / 2.0)
+                    WHEN pre_rr IS NOT NULL AND pre_rr > 0 THEN 60.0 / pre_rr
+                    ELSE NULL
+                END AS heart_rate,
                 prediction_class,
                 prediction_label,
                 confidence
@@ -376,6 +428,12 @@ def api_history():
                 post_rr,
                 r_peak,
                 qrs_interval,
+                CASE
+                    WHEN heart_rate IS NOT NULL THEN heart_rate
+                    WHEN pre_rr IS NOT NULL AND post_rr IS NOT NULL AND ((pre_rr + post_rr) / 2.0) > 0 THEN 60.0 / ((pre_rr + post_rr) / 2.0)
+                    WHEN pre_rr IS NOT NULL AND pre_rr > 0 THEN 60.0 / pre_rr
+                    ELSE NULL
+                END AS heart_rate,
                 prediction_class,
                 prediction_label,
                 confidence
@@ -479,6 +537,12 @@ def api_export_excel():
                 post_rr,
                 r_peak,
                 qrs_interval,
+                CASE
+                    WHEN heart_rate IS NOT NULL THEN heart_rate
+                    WHEN pre_rr IS NOT NULL AND post_rr IS NOT NULL AND ((pre_rr + post_rr) / 2.0) > 0 THEN 60.0 / ((pre_rr + post_rr) / 2.0)
+                    WHEN pre_rr IS NOT NULL AND pre_rr > 0 THEN 60.0 / pre_rr
+                    ELSE NULL
+                END AS heart_rate,
                 prediction_label,
                 confidence
             FROM ecg_predictions
@@ -497,6 +561,7 @@ def api_export_excel():
             "0_post-RR (ms)",
             "0_rPeak (ADC)",
             "0_qrs_interval (ms)",
+            "Heart Rate (BPM)",
             "Prediction",
             "Confidence (%)",
         ])
@@ -511,6 +576,7 @@ def api_export_excel():
                 time_to_ms(row.get("post_rr")),
                 fmt_number(row.get("r_peak"), 2),
                 time_to_ms(row.get("qrs_interval")),
+                fmt_number(row.get("heart_rate"), 1),
                 row.get("prediction_label", ""),
                 fmt_number(row.get("confidence"), 1),
             ])
