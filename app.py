@@ -406,7 +406,7 @@ def api_latest():
                 prediction_label,
                 confidence,
                 CASE
-                    WHEN timestamp < (CURRENT_TIMESTAMP - INTERVAL '10 seconds') THEN 'WAITING'
+                    WHEN timestamp < (CURRENT_TIMESTAMP - INTERVAL '60 seconds') THEN 'WAITING'
                     ELSE prediction_label
                 END AS live_status
             FROM ecg_predictions
