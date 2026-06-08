@@ -404,13 +404,28 @@ def api_latest():
                 END AS heart_rate,
                 prediction_class,
                 prediction_label,
-                confidence
+                confidence,
+                CASE
+                    WHEN timestamp < (CURRENT_TIMESTAMP - INTERVAL '10 seconds') THEN 'WAITING'
+                    ELSE prediction_label
+                END AS live_status
             FROM ecg_predictions
             ORDER BY timestamp DESC, id DESC
             LIMIT 1;
             """
         )
-        return jsonify(rows[0] if rows else None)
+
+        if not rows:
+            return jsonify({
+                "live_status": "WAITING",
+                "prediction_label": "WAITING",
+                "heart_rate": None,
+                "confidence": None,
+                "message": "Waiting for ECG signal"
+            })
+
+        return jsonify(rows[0])
+
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -456,10 +471,17 @@ def api_stats():
                 COUNT(*) AS total_predictions,
                 COUNT(*) FILTER (WHERE LOWER(prediction_label) = 'normal') AS normal_count,
                 COUNT(*) FILTER (WHERE LOWER(prediction_label) = 'abnormal') AS abnormal_count
-            FROM ecg_predictions;
+            FROM ecg_predictions
+            WHERE timestamp >= (CURRENT_TIMESTAMP - INTERVAL '1 hour');
             """
         )
-        return jsonify(rows[0] if rows else {"total_predictions": 0, "normal_count": 0, "abnormal_count": 0})
+
+        return jsonify(rows[0] if rows else {
+            "total_predictions": 0,
+            "normal_count": 0,
+            "abnormal_count": 0
+        })
+
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
