@@ -5,139 +5,92 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 
-// =====================================================
-// WIFI + RENDER SERVER SETTINGS
-// =====================================================
-// IMPORTANT:
-// 1) ESP32 only supports 2.4 GHz WiFi.
-// 2) For iPhone hotspot, turn ON "Maximize Compatibility".
-// 3) Make sure SSID is exactly the same as shown on your phone.
 const char* WIFI_SSID = "Safiah’s Iphone";
 const char* WIFI_PASSWORD = "safiah123";
-
-// Replace this with your real Render dashboard URL.
-// Example: https://ecg-dashboard-xxxx.onrender.com/api/esp32/features
 const char* SERVER_URL = "https://ecg-dashboard-jf8e.onrender.com/api/esp32/features";
-
-// Optional security key. If you set ESP32_API_KEY in Render, use the same value here.
-// If you do not set ESP32_API_KEY in Render, this can stay empty.
 const char* API_KEY = "safiah_ecg_2026";
-
 const char* DEVICE_ID = "ESP32_AD8232_01";
 
-// =====================================================
-// OLED SETTINGS
-// =====================================================
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 #define OLED_ADDR 0x3C
 
-Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// =====================================================
-// ESP32 PIN SETTINGS
-// =====================================================
-#define ECG_PIN 34       // AD8232 OUTPUT
-#define LO_PLUS 32       // AD8232 LO+
-#define LO_MINUS 33      // AD8232 LO-
+#define ECG_PIN 34
+#define LO_PLUS 32
+#define LO_MINUS 33
+#define SDA_PIN 21
+#define SCL_PIN 22
 
-#define SDA_PIN 21       // OLED SDA
-#define SCL_PIN 22       // OLED SCL
-
-// =====================================================
-// TIMING SETTINGS
-// =====================================================
 unsigned long lastSampleTime = 0;
 unsigned long lastDisplayTime = 0;
-unsigned long lastHeartBlink = 0;
 unsigned long lastFeatureSendTime = 0;
-unsigned long lastRPeakTime = 0;
 unsigned long lastWiFiCheckTime = 0;
+unsigned long lastRPeakTime = 0;
 
-const unsigned long sampleInterval = 4;           // 4 ms = 250 Hz
-const unsigned long displayInterval = 100;        // OLED update speed
-const unsigned long heartBlinkInterval = 500;     // heart blink
-const unsigned long featureSendInterval = 2000;   // send features every 2 sec to Render
-const unsigned long refractoryPeriod = 500;       // avoid false/double R peak
-const unsigned long wifiCheckInterval = 5000;     // WiFi reconnect check
+const unsigned long sampleInterval = 4;
+const unsigned long displayInterval = 100;
+const unsigned long featureSendInterval = 2000;
+const unsigned long wifiCheckInterval = 5000;
+const unsigned long refractoryPeriod = 500;
 
-// =====================================================
-// ECG VARIABLES
-// =====================================================
 int rawECG = 0;
-
-float filteredECG = 0;
-float previousFilteredECG = 0;
-
-float minECG = -300;
-float maxECG = 300;
-float threshold = 0;
-
-bool firstSample = true;
-bool heartState = false;
-
 int leadOffPlus = 0;
 int leadOffMinus = 0;
 
-// =====================================================
-// BUTTERWORTH BANDPASS FILTER VARIABLES
-// Bandpass 0.5 Hz - 40 Hz, Fs = 250 Hz
-// =====================================================
+float filteredECG = 0;
+float previousFilteredECG = 0;
+float minECG = -300;
+float maxECG = 300;
+float threshold = 0;
+bool firstSample = true;
+bool validECGSignal = false;
+
+const int RAW_ECG_MIN = 300;
+const int RAW_ECG_MAX = 3800;
+const float MIN_ECG_RANGE = 120.0;
+
 float xBuffer[5] = {0, 0, 0, 0, 0};
 float yBuffer[5] = {0, 0, 0, 0, 0};
-
 float butterECG = 0;
-float previousButterECG = 0;
 
-// =====================================================
-// ML FEATURE VARIABLES
-// These are the 4 features required by ML model
-// =====================================================
-float preRR = 0.0;          // 0_pre-RR in seconds
-float postRR = 0.0;         // 0_post-RR in seconds
-float rPeak = 0.0;          // 0_rPeak in ADC/raw amplitude
-float qrsInterval = 0.08;   // 0_qrs_interval in seconds
-
-float previousRR = 0.0;
+float preRR = 0.0;
+float postRR = 0.0;
+float rPeak = 0.0;
+float qrsInterval = 0.08;
 float currentRR = 0.0;
-float lastValidRR = 0.0;   // stores last accepted RR interval only
+float lastValidRR = 0.0;
 
 int bpm = 0;
 bool featureReady = false;
+bool newFeatureAvailable = false;
+unsigned long featureCreatedTime = 0;
+const unsigned long featureValidDuration = 1500;
 
-// =====================================================
-// BUFFER VARIABLES
-// Kept for internal R-peak/structure consistency.
-// Nothing is displayed as waveform on OLED.
-// =====================================================
-int waveform[128];
-int waveformIndex = 0;
-
-int lastRIndex = -1;
 String mlStatus = "WAITING";
-String serverMessage = "Waiting ML";
+String serverMessage = "Waiting ECG";
 int lastHttpCode = 0;
 
-// =====================================================
-// DRAW HEART ICON
-// =====================================================
-void drawHeart(int x, int y, int size, bool filled) {
-  if (filled) {
-    display.fillCircle(x - size / 2, y - size / 2, size / 2, SH110X_WHITE);
-    display.fillCircle(x + size / 2, y - size / 2, size / 2, SH110X_WHITE);
-    display.fillTriangle(x - size, y - size / 4, x + size, y - size / 4, x, y + size, SH110X_WHITE);
-  } else {
-    display.drawCircle(x - size / 2, y - size / 2, size / 2, SH110X_WHITE);
-    display.drawCircle(x + size / 2, y - size / 2, size / 2, SH110X_WHITE);
-    display.drawLine(x - size, y - size / 4, x, y + size, SH110X_WHITE);
-    display.drawLine(x + size, y - size / 4, x, y + size, SH110X_WHITE);
-  }
+void resetECGFeature(String message) {
+  featureReady = false;
+  newFeatureAvailable = false;
+
+  bpm = 0;
+  preRR = 0.0;
+  postRR = 0.0;
+  rPeak = 0.0;
+  qrsInterval = 0.08;
+  currentRR = 0.0;
+  lastValidRR = 0.0;
+
+  lastRPeakTime = 0;
+
+  mlStatus = "WAITING";
+  serverMessage = message;
 }
 
-// =====================================================
-// OLED SMALL MESSAGE
-// =====================================================
 void showMessage(String line1, String line2, String line3 = "") {
   display.clearDisplay();
   display.setTextColor(SH110X_WHITE);
@@ -153,16 +106,10 @@ void showMessage(String line1, String line2, String line3 = "") {
   display.display();
 }
 
-// =====================================================
-// WIFI CONNECT
-// =====================================================
 void connectWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
-    return;
-  }
+  if (WiFi.status() == WL_CONNECTED) return;
 
   showMessage("Connecting WiFi", WIFI_SSID, "Please wait...");
-
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -170,23 +117,17 @@ void connectWiFi() {
 
   while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 20000) {
     delay(500);
-    display.print(".");
-    display.display();
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     showMessage("WiFi Connected", WiFi.localIP().toString(), "Render Ready");
-    delay(1200);
+    delay(1000);
   } else {
-    showMessage("WiFi Failed", "Check SSID/pass", "or iPhone hotspot");
-    delay(1800);
+    showMessage("WiFi Failed", "Check hotspot", "2.4GHz only");
+    delay(1500);
   }
 }
 
-// =====================================================
-// SIMPLE JSON STRING VALUE EXTRACTOR
-// Extracts: "status":"NORMAL"
-// =====================================================
 String extractJsonString(String json, String key) {
   String searchKey = "\"" + key + "\"";
   int keyIndex = json.indexOf(searchKey);
@@ -204,98 +145,6 @@ String extractJsonString(String json, String key) {
   return json.substring(firstQuote + 1, secondQuote);
 }
 
-// =====================================================
-// SEND FEATURES TO RENDER API USING WIFI
-// =====================================================
-void sendFeaturesToRender() {
-  if (leadOffPlus == 1 || leadOffMinus == 1) {
-    mlStatus = "LEADS_OFF";
-    serverMessage = "Check electrodes";
-    return;
-  }
-
-  if (!featureReady) {
-    mlStatus = "WAITING";
-    serverMessage = "Waiting features";
-    return;
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    mlStatus = "WAITING";
-    serverMessage = "WiFi not connected";
-    connectWiFi();
-    return;
-  }
-
-  WiFiClientSecure client;
-  client.setInsecure();  // Prototype use: skip certificate validation for Render HTTPS
-
-  HTTPClient https;
-  https.setTimeout(10000);
-
-  if (!https.begin(client, SERVER_URL)) {
-    mlStatus = "WAITING";
-    serverMessage = "HTTP begin failed";
-    return;
-  }
-
-  https.addHeader("Content-Type", "application/json");
-
-  if (String(API_KEY).length() > 0) {
-    https.addHeader("X-API-Key", API_KEY);
-  }
-
-  String payload = "{";
-  payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
-  payload += "\"pre_rr\":" + String(preRR, 4) + ",";
-  payload += "\"post_rr\":" + String(postRR, 4) + ",";
-  payload += "\"r_peak\":" + String(rPeak, 2) + ",";
-  payload += "\"qrs_interval\":" + String(qrsInterval, 4) + ",";
-  payload += "\"heart_rate\":" + String(bpm) + ",";
-  payload += "\"lo_plus\":" + String(leadOffPlus) + ",";
-  payload += "\"lo_minus\":" + String(leadOffMinus);
-  payload += "}";
-
-  lastHttpCode = https.POST(payload);
-  String response = https.getString();
-  https.end();
-
-  Serial.print("HTTP Code: ");
-  Serial.println(lastHttpCode);
-  Serial.print("Response: ");
-  Serial.println(response);
-
-  if (lastHttpCode == 200 || lastHttpCode == 201) {
-    String status = extractJsonString(response, "status");
-    status.trim();
-    status.toUpperCase();
-
-    if (status == "NORMAL") {
-      mlStatus = "NORMAL";
-      serverMessage = "Saved to Render";
-    } else if (status == "ABNORMAL") {
-      mlStatus = "ABNORMAL";
-      serverMessage = "Saved to Render";
-    } else if (status == "WAITING") {
-      mlStatus = "WAITING";
-      serverMessage = "Signal validation";
-    } else if (status == "LEADS_OFF") {
-      mlStatus = "LEADS_OFF";
-      serverMessage = "Check electrodes";
-    } else {
-      mlStatus = "WAITING";
-      serverMessage = "Unknown response";
-    }
-  } else {
-    mlStatus = "WAITING";
-    serverMessage = "HTTP error " + String(lastHttpCode);
-  }
-}
-
-// =====================================================
-// BUTTERWORTH BANDPASS FILTER FUNCTION
-// Bandpass 0.5 Hz - 40 Hz, Sampling Frequency = 250 Hz
-// =====================================================
 float butterworthFilter(float input) {
   xBuffer[4] = xBuffer[3];
   xBuffer[3] = xBuffer[2];
@@ -320,81 +169,14 @@ float butterworthFilter(float input) {
   return yBuffer[0];
 }
 
-// =====================================================
-// STARTUP SCREEN
-// =====================================================
-void startupScreen() {
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println("Portable Real-Time");
-
-  display.setCursor(0, 12);
-  display.println("ECG-Based");
-
-  display.setCursor(0, 24);
-  display.println("Arrhythmia Detection");
-
-  display.setCursor(0, 42);
-  display.println("ESP32 + AD8232 + ML");
-
-  display.display();
-  delay(1500);
-
-  display.clearDisplay();
-  display.setTextSize(2);
-  display.setCursor(12, 8);
-  display.println("ECG");
-
-  display.setCursor(12, 30);
-  display.println("READY");
-
-  display.setTextSize(1);
-  display.setCursor(5, 54);
-  display.println("WiFi + Render API");
-
-  display.display();
-  delay(1200);
-}
-
-// =====================================================
-// MAP FILTERED ECG TO INTERNAL BUFFER
-// Not displayed on OLED.
-// =====================================================
-int mapECGToY(float value) {
-  float range = maxECG - minECG;
-
-  if (range < 30) {
-    return 45;
-  }
-
-  int y = map((int)value, (int)minECG, (int)maxECG, 61, 31);
-  y = constrain(y, 31, 61);
-
-  return y;
-}
-
-// =====================================================
-// ESTIMATE QRS INTERVAL
-// =====================================================
 float estimateQRSInterval() {
-  // Prototype-level QRS interval estimation.
-  // Exact QRS onset/offset is difficult with AD8232 without advanced processing.
-  // 0.08 sec is used as a reasonable estimated QRS interval.
   return 0.08;
 }
 
-// =====================================================
-// R-PEAK DETECTION + FEATURE CALCULATION
-// =====================================================
 void detectRPeak(unsigned long currentTime) {
   float range = maxECG - minECG;
 
-  if (range < 30) {
-    return;
-  }
+  if (range < MIN_ECG_RANGE) return;
 
   threshold = minECG + (range * 0.80);
 
@@ -403,36 +185,32 @@ void detectRPeak(unsigned long currentTime) {
 
   if (crossingThreshold && enoughTimePassed) {
     rPeak = rawECG;
-    lastRIndex = waveformIndex;
 
     if (lastRPeakTime > 0) {
       currentRR = (currentTime - lastRPeakTime) / 1000.0;
 
-      // Accept realistic RR interval only.
-      // If one invalid beat occurs, do not reuse it as preRR later.
       if (currentRR > 0.3 && currentRR < 2.0) {
         if (lastValidRR > 0.3 && lastValidRR < 2.0) {
           preRR = lastValidRR;
           postRR = currentRR;
-
           bpm = (int)(60.0 / currentRR);
           qrsInterval = estimateQRSInterval();
+
           featureReady = true;
-        } else {
-          featureReady = false;   // need one more valid beat before sending features
+          newFeatureAvailable = true;
+          featureCreatedTime = currentTime;
+
+          Serial.println("New ECG feature ready");
+          Serial.print("preRR: "); Serial.println(preRR, 4);
+          Serial.print("postRR: "); Serial.println(postRR, 4);
+          Serial.print("rPeak: "); Serial.println(rPeak, 2);
+          Serial.print("qrs: "); Serial.println(qrsInterval, 4);
+          Serial.print("BPM: "); Serial.println(bpm);
         }
 
-        previousRR = lastValidRR;
         lastValidRR = currentRR;
       } else {
-        // Invalid RR interval: reset feature readiness so 4s/5s intervals are not sent.
-        featureReady = false;
-        previousRR = 0.0;
-        currentRR = 0.0;
-        lastValidRR = 0.0;
-        preRR = 0.0;
-        postRR = 0.0;
-        serverMessage = "Waiting valid RR";
+        resetECGFeature("Invalid RR");
       }
     }
 
@@ -440,75 +218,175 @@ void detectRPeak(unsigned long currentTime) {
   }
 }
 
-// =====================================================
-// UPDATE OLED DISPLAY
-// Only title + heart rate + ML status.
-// No waveform is displayed.
-// =====================================================
+void sendFeaturesToRender() {
+  if (leadOffPlus == 1 || leadOffMinus == 1) {
+    mlStatus = "LEADS_OFF";
+    serverMessage = "Check electrodes";
+    return;
+  }
+
+  if (!validECGSignal) {
+    resetECGFeature("No valid ECG");
+    return;
+  }
+
+  if (!featureReady || !newFeatureAvailable || millis() - featureCreatedTime > featureValidDuration) {
+    mlStatus = "WAITING";
+    serverMessage = "Waiting new ECG";
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    mlStatus = "WAITING";
+    serverMessage = "WiFi not connected";
+    connectWiFi();
+    return;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient https;
+  https.setTimeout(10000);
+
+  if (!https.begin(client, SERVER_URL)) {
+    mlStatus = "WAITING";
+    serverMessage = "HTTP failed";
+    return;
+  }
+
+  https.addHeader("Content-Type", "application/json");
+
+  if (String(API_KEY).length() > 0) {
+    https.addHeader("X-API-Key", API_KEY);
+  }
+
+  String payload = "{";
+  payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  payload += "\"pre_rr\":" + String(preRR, 4) + ",";
+  payload += "\"post_rr\":" + String(postRR, 4) + ",";
+  payload += "\"r_peak\":" + String(rPeak, 2) + ",";
+  payload += "\"qrs_interval\":" + String(qrsInterval, 4) + ",";
+  payload += "\"heart_rate\":" + String(bpm) + ",";
+  payload += "\"lo_plus\":" + String(leadOffPlus) + ",";
+  payload += "\"lo_minus\":" + String(leadOffMinus);
+  payload += "}";
+
+  lastHttpCode = https.POST(payload);
+  String response = https.getString();
+  https.end();
+
+  Serial.print("Payload: ");
+  Serial.println(payload);
+  Serial.print("HTTP Code: ");
+  Serial.println(lastHttpCode);
+  Serial.print("Response: ");
+  Serial.println(response);
+
+  if (lastHttpCode == 200 || lastHttpCode == 201) {
+    newFeatureAvailable = false;
+    featureReady = false;
+
+    String status = extractJsonString(response, "status");
+    status.trim();
+    status.toUpperCase();
+
+    if (status == "NORMAL") {
+      mlStatus = "NORMAL";
+      serverMessage = "Saved";
+    } else if (status == "ABNORMAL") {
+      mlStatus = "ABNORMAL";
+      serverMessage = "Saved";
+    } else if (status == "LEADS_OFF") {
+      mlStatus = "LEADS_OFF";
+      serverMessage = "Check electrodes";
+    } else {
+      mlStatus = "WAITING";
+      serverMessage = "Signal validation";
+    }
+  } else {
+    mlStatus = "WAITING";
+    serverMessage = "HTTP error";
+  }
+}
+
+void startupScreen() {
+  display.clearDisplay();
+  display.setTextColor(SH110X_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Portable Real-Time");
+  display.setCursor(0, 14);
+  display.println("ECG Arrhythmia");
+  display.setCursor(0, 28);
+  display.println("Detection System");
+  display.setCursor(0, 46);
+  display.println("ESP32 + AD8232 + ML");
+  display.display();
+  delay(1500);
+}
+
 void updateOLED() {
   display.clearDisplay();
   display.setTextColor(SH110X_WHITE);
 
+  // =========================
+  // TITLE
+  // =========================
   display.setTextSize(1);
-  display.setCursor(18, 0);
-  display.print("ECG ML Monitor");
+  display.setCursor(8, 0);
+  display.print("ECG ARRHYTHMIA");
 
-  if (heartState) {
-    drawHeart(118, 8, 5, true);
-  } else {
-    drawHeart(118, 8, 5, false);
+  display.setCursor(4, 10);
+  display.print("DETECTION & CLASS");
+
+  display.drawLine(0, 21, 128, 21, SH110X_WHITE);
+
+  // =========================
+  // BIG STATUS DISPLAY
+  // =========================
+  display.setTextSize(2);
+
+  if (leadOffPlus == 1 || leadOffMinus == 1 || mlStatus == "LEADS_OFF") {
+    display.setCursor(16, 27);
+    display.print("LEADS");
+    display.setCursor(36, 45);
+    display.print("OFF");
+  } 
+  else if (mlStatus == "NORMAL") {
+    display.setCursor(20, 34);
+    display.print("NORMAL");
+  } 
+  else if (mlStatus == "ABNORMAL") {
+    display.setCursor(0, 34);
+    display.print("ABNORMAL");
+  } 
+  else {
+    display.setCursor(12, 34);
+    display.print("WAITING");
   }
 
-  display.setCursor(0, 16);
-  display.print("WiFi:");
-  if (WiFi.status() == WL_CONNECTED) {
-    display.print(" OK");
-  } else {
-    display.print(" OFF");
-  }
+  // =========================
+  // FOOTER
+  // =========================
+  display.setTextSize(1);
 
-  display.setCursor(68, 16);
-  display.print("HTTP:");
-  display.print(lastHttpCode);
-
-  display.setCursor(0, 28);
-  display.print("HR:");
+  display.setCursor(0, 56);
   if (bpm > 0) {
+    display.print("HR:");
     display.print(bpm);
     display.print(" BPM");
   } else {
-    display.print("-- BPM");
+    display.print("HR:-- BPM");
   }
 
-  display.setCursor(0, 40);
-  display.print("Result:");
-
-  if (leadOffPlus == 1 || leadOffMinus == 1 || mlStatus == "LEADS_OFF") {
-    display.setCursor(46, 40);
-    display.print("LEADS OFF");
-    display.setCursor(0, 54);
-    display.print("Check electrodes");
-    display.display();
-    return;
-  }
-
-  display.setCursor(46, 40);
-  if (mlStatus == "NORMAL") {
-    display.print("NORMAL");
-  } else if (mlStatus == "ABNORMAL") {
-    display.print("ABNORMAL");
-  } else {
-    display.print("WAITING");
-    display.setCursor(0, 54);
-    display.print(serverMessage.substring(0, 20));
-  }
+  display.setCursor(86, 56);
+  display.print("WiFi:");
+  display.print(WiFi.status() == WL_CONNECTED ? "OK" : "OFF");
 
   display.display();
 }
 
-// =====================================================
-// SETUP
-// =====================================================
 void setup() {
   Serial.begin(115200);
   Serial.setTimeout(5);
@@ -526,21 +404,13 @@ void setup() {
     while (true);
   }
 
-  for (int i = 0; i < 128; i++) {
-    waveform[i] = 45;
-  }
-
   startupScreen();
   connectWiFi();
 }
 
-// =====================================================
-// LOOP
-// =====================================================
 void loop() {
   unsigned long currentTime = millis();
 
-  // Keep WiFi alive
   if (currentTime - lastWiFiCheckTime >= wifiCheckInterval) {
     lastWiFiCheckTime = currentTime;
     if (WiFi.status() != WL_CONNECTED) {
@@ -548,7 +418,6 @@ void loop() {
     }
   }
 
-  // ECG sampling
   if (currentTime - lastSampleTime >= sampleInterval) {
     lastSampleTime = currentTime;
 
@@ -556,78 +425,60 @@ void loop() {
     leadOffMinus = digitalRead(LO_MINUS);
     rawECG = analogRead(ECG_PIN);
 
-    previousButterECG = butterECG;
-    butterECG = butterworthFilter((float)rawECG);
-
-    previousFilteredECG = filteredECG;
-    filteredECG = butterECG;
-
-    if (firstSample) {
-      minECG = filteredECG - 100;
-      maxECG = filteredECG + 100;
-      firstSample = false;
-    }
-
-    if (filteredECG < minECG) {
-      minECG = filteredECG;
-    } else {
-      minECG = minECG + 0.005 * (filteredECG - minECG);
-    }
-
-    if (filteredECG > maxECG) {
-      maxECG = filteredECG;
-    } else {
-      maxECG = maxECG + 0.005 * (filteredECG - maxECG);
-    }
-
-    waveform[waveformIndex] = mapECGToY(filteredECG);
-
-    if (leadOffPlus == 0 && leadOffMinus == 0) {
-      detectRPeak(currentTime);
-
-      // If no valid R-peak is detected for too long, wait instead of sending stale features.
-      if (lastRPeakTime > 0 && (currentTime - lastRPeakTime > 2500)) {
-        featureReady = false;
-        preRR = 0.0;
-        postRR = 0.0;
-        rPeak = 0.0;
-        qrsInterval = 0.08;
-        previousRR = 0.0;
-        currentRR = 0.0;
-        lastValidRR = 0.0;
-        mlStatus = "WAITING";
-        serverMessage = "Waiting valid ECG";
-      }
-    } else {
-      featureReady = false;
-      bpm = 0;
-      preRR = 0.0;
-      postRR = 0.0;
-      rPeak = 0.0;
-      qrsInterval = 0.08;
-      previousRR = 0.0;
-      currentRR = 0.0;
-      lastValidRR = 0.0;
+    if (leadOffPlus == 1 || leadOffMinus == 1) {
+      validECGSignal = false;
+      resetECGFeature("Check electrodes");
       mlStatus = "LEADS_OFF";
-      serverMessage = "Check electrodes";
-    }
+    } 
+    else if (rawECG < RAW_ECG_MIN || rawECG > RAW_ECG_MAX) {
+      validECGSignal = false;
+      resetECGFeature("No valid ECG");
+    } 
+    else {
+      previousFilteredECG = filteredECG;
+      butterECG = butterworthFilter((float)rawECG);
+      filteredECG = butterECG;
 
-    waveformIndex = (waveformIndex + 1) % 128;
+      if (firstSample) {
+        minECG = filteredECG - 100;
+        maxECG = filteredECG + 100;
+        firstSample = false;
+      }
+
+      if (filteredECG < minECG) {
+        minECG = filteredECG;
+      } else {
+        minECG = minECG + 0.005 * (filteredECG - minECG);
+      }
+
+      if (filteredECG > maxECG) {
+        maxECG = filteredECG;
+      } else {
+        maxECG = maxECG + 0.005 * (filteredECG - maxECG);
+      }
+
+      float ecgRange = maxECG - minECG;
+
+      if (ecgRange < MIN_ECG_RANGE) {
+        validECGSignal = false;
+        resetECGFeature("No real ECG");
+      } else {
+        validECGSignal = true;
+        detectRPeak(currentTime);
+      }
+
+      if (lastRPeakTime > 0 && currentTime - lastRPeakTime > 2500) {
+        validECGSignal = false;
+        resetECGFeature("Waiting valid ECG");
+      }
+    }
   }
 
-  // Send features to Render API every 2 seconds
   if (currentTime - lastFeatureSendTime >= featureSendInterval) {
     lastFeatureSendTime = currentTime;
     sendFeaturesToRender();
   }
 
-  // Heart blink animation
-  if (currentTime - lastHeartBlink >= heartBlinkInterval) {
-    lastHeartBlink = currentTime;
-    heartState = !heartState;
-  }
-
-  // Update OLED
   if (currentTime - lastDisplayTime >= displayInterval) {
     lastDisplayTime = currentTime;
     updateOLED();
