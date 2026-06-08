@@ -17,7 +17,6 @@ app = Flask(__name__)
 # =====================================================
 # DATABASE SETTINGS
 # =====================================================
-# Render uses DATABASE_URL. Local PostgreSQL can still use DB_HOST/DB_NAME/etc.
 DATABASE_URL = os.getenv("DATABASE_URL")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "ecg_db")
@@ -28,7 +27,6 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 # =====================================================
 # ML / ESP32 WIFI API SETTINGS
 # =====================================================
-# Use the compressed small model because GitHub browser upload accepts files under 25 MB.
 MODEL_PATH = os.getenv("MODEL_PATH", "ecg_hardware_friendly_model_small.joblib")
 ESP32_API_KEY = os.getenv("ESP32_API_KEY", "").strip()
 
@@ -87,7 +85,6 @@ def ensure_table_exists():
         cur.close()
         print("ecg_predictions and patients tables are ready.")
     except Exception as exc:
-        # Do not crash Render during boot if DB is sleeping/unavailable.
         print("Database setup warning:", exc)
     finally:
         if conn:
@@ -154,7 +151,6 @@ def get_optional_float(payload, *keys):
 
 
 def calculate_heart_rate(pre_rr, post_rr=None):
-    """Calculate heart rate in BPM from valid RR interval values in seconds."""
     intervals = []
     for value in (pre_rr, post_rr):
         try:
@@ -179,10 +175,9 @@ def calculate_heart_rate(pre_rr, post_rr=None):
 
 
 # =====================================================
-# ML MODEL HELPERS FOR ESP32 WIFI MODE
+# ML MODEL HELPERS
 # =====================================================
 def load_model_bundle():
-    """Load the trained ECG ML model once when the ESP32 WiFi API is used."""
     global MODEL_BUNDLE, MODEL_LOAD_ERROR
 
     if MODEL_BUNDLE is not None:
@@ -211,35 +206,23 @@ def get_float(payload, *keys):
 
 
 def validate_ecg_features(data):
-    """
-    Validate ECG features before ML prediction.
-
-    Unit rules:
-    - 0_pre-RR and 0_post-RR are in seconds from ESP32, displayed as ms in dashboard.
-    - 0_qrs_interval is in seconds from ESP32, displayed as ms in dashboard.
-    - 0_rPeak is ADC/raw amplitude.
-    """
     pre_rr = data["0_pre-RR"]
     post_rr = data["0_post-RR"]
     r_peak = data["0_rPeak"]
     qrs_interval = data["0_qrs_interval"]
 
-    # RR interval in seconds. 0.30–2.00 s is approximately 30–200 BPM.
     if pre_rr < 0.30 or pre_rr > 2.00:
         return False, f"preRR not realistic: {pre_rr:.4f} s"
 
     if post_rr < 0.30 or post_rr > 2.00:
         return False, f"postRR not realistic: {post_rr:.4f} s"
 
-    # RR variation can happen in arrhythmia, so this is intentionally not too strict.
     if abs(pre_rr - post_rr) > 1.50:
         return False, f"RR interval mismatch too large: preRR={pre_rr:.4f}, postRR={post_rr:.4f}"
 
-    # ESP32 ADC is 0–4095. Keep obvious flat/noisy readings out.
     if r_peak < 300 or r_peak > 4095:
         return False, f"rPeak not valid: {r_peak:.2f} ADC"
 
-    # QRS interval in seconds. 0.04–0.20 s = 40–200 ms.
     if qrs_interval < 0.04 or qrs_interval > 0.20:
         return False, f"QRS interval not valid: {qrs_interval:.4f} s"
 
@@ -247,16 +230,21 @@ def validate_ecg_features(data):
 
 
 def predict_ecg_status(features):
-    """Run the hardware-friendly trained model and return class, label, confidence."""
     bundle = load_model_bundle()
     if bundle is None:
         raise RuntimeError(MODEL_LOAD_ERROR or "Model could not be loaded")
 
     model = bundle["pipeline"] if isinstance(bundle, dict) and "pipeline" in bundle else bundle
-    feature_columns = bundle.get("feature_columns", [
-        "0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"
-    ]) if isinstance(bundle, dict) else ["0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"]
-    label_mapping = bundle.get("label_mapping", {0: "Normal", 1: "Abnormal"}) if isinstance(bundle, dict) else {0: "Normal", 1: "Abnormal"}
+
+    feature_columns = bundle.get(
+        "feature_columns",
+        ["0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"]
+    ) if isinstance(bundle, dict) else ["0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"]
+
+    label_mapping = bundle.get(
+        "label_mapping",
+        {0: "Normal", 1: "Abnormal"}
+    ) if isinstance(bundle, dict) else {0: "Normal", 1: "Abnormal"}
 
     X = pd.DataFrame([{
         "0_pre-RR": features["0_pre-RR"],
@@ -294,11 +282,6 @@ def api_health():
 
 @app.route("/api/esp32/features", methods=["POST"])
 def api_esp32_features():
-    """
-    Direct ESP32 WiFi endpoint.
-    ESP32 sends extracted ECG features here using HTTP POST.
-    Server runs ML prediction, stores result into PostgreSQL, and returns NORMAL/ABNORMAL.
-    """
     payload = request.get_json(silent=True) or {}
 
     if ESP32_API_KEY:
@@ -326,9 +309,10 @@ def api_esp32_features():
             return jsonify({"status": "WAITING", "message": validation_message}), 200
 
         received_heart_rate = get_optional_float(payload, "heart_rate", "heartRate", "bpm", "BPM")
-        heart_rate = received_heart_rate if received_heart_rate and 20 <= received_heart_rate <= 250 else calculate_heart_rate(
-            features["0_pre-RR"],
-            features["0_post-RR"],
+        heart_rate = (
+            received_heart_rate
+            if received_heart_rate and 20 <= received_heart_rate <= 250
+            else calculate_heart_rate(features["0_pre-RR"], features["0_post-RR"])
         )
 
         prediction_class, prediction_label, confidence = predict_ecg_status(features)
@@ -410,13 +394,16 @@ def api_latest():
                     ELSE prediction_label
                 END AS live_status
             FROM ecg_predictions
-            ORDER BY timestamp DESC, id DESC
+            ORDER BY id DESC
             LIMIT 1;
             """
         )
 
         if not rows:
             return jsonify({
+                "id": None,
+                "timestamp": "--",
+                "device_id": "--",
                 "live_status": "WAITING",
                 "prediction_label": "WAITING",
                 "heart_rate": None,
@@ -453,7 +440,7 @@ def api_history():
                 prediction_label,
                 confidence
             FROM ecg_predictions
-            ORDER BY timestamp DESC, id DESC
+            ORDER BY id DESC
             LIMIT 30;
             """
         )
@@ -498,7 +485,7 @@ def api_patient():
                     age,
                     to_char(created_at, 'DD/MM/YYYY, HH24:MI:SS') AS created_at
                 FROM patients
-                ORDER BY created_at DESC, id DESC
+                ORDER BY id DESC
                 LIMIT 1;
                 """
             )
@@ -538,13 +525,12 @@ def api_patient():
 
 @app.route("/api/export-excel")
 def api_export_excel():
-    """Export an Excel-compatible CSV file that can be opened directly in Microsoft Excel."""
     try:
         patient_rows = query_db(
             """
             SELECT patient_name, age
             FROM patients
-            ORDER BY created_at DESC, id DESC
+            ORDER BY id DESC
             LIMIT 1;
             """
         )
@@ -568,7 +554,7 @@ def api_export_excel():
                 prediction_label,
                 confidence
             FROM ecg_predictions
-            ORDER BY timestamp DESC, id DESC;
+            ORDER BY id DESC;
             """
         )
 
@@ -617,9 +603,16 @@ def api_export_excel():
 def api_db_status():
     try:
         query_db("SELECT 1;")
-        return jsonify({"connected": True, "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL"})
+        return jsonify({
+            "connected": True,
+            "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL"
+        })
     except Exception as exc:
-        return jsonify({"connected": False, "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL", "error": str(exc)})
+        return jsonify({
+            "connected": False,
+            "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL",
+            "error": str(exc)
+        })
 
 
 ensure_table_exists()
