@@ -252,9 +252,9 @@ def apply_rhythm_safety_logic(prediction_label, prediction_class, confidence, fe
     reasons = []
     if bpm < 50:
         reasons.append("bradycardia range")
-    if bpm > 120:
+    if bpm >= 120:
         reasons.append("tachycardia range")
-    if rr_diff > 0.18:
+    if rr_diff > 0.30:
         reasons.append("irregular RR interval")
 
     if reasons:
@@ -356,6 +356,23 @@ def api_esp32_features():
             "rr_diff_s": rr_diff,
             "bpm": heart_rate,
         }
+
+        # Normal-mode transition filter:
+        # When the simulator is changed from tachy/brady/irregular back to normal,
+        # the first RR pair may mix one old interval with one new normal interval.
+        # Example: pre_rr=0.530 s and post_rr=0.749 s gives bpm≈80 but rr_diff≈0.219 s.
+        # That is a transition artifact, not a stable normal rhythm. Do not save/predict it.
+        if 55 <= heart_rate <= 105 and 0.18 < rr_diff <= 0.30:
+            return jsonify({
+                "status": "WAITING",
+                "prediction_label": "WAITING",
+                "prediction_class": -1,
+                "confidence": 0.0,
+                "heart_rate": heart_rate,
+                "bpm": heart_rate,
+                "decision_message": "Transition filter: waiting for stable normal RR intervals",
+                "message": "Rhythm stabilizing. Wait 3-5 beats before reading.",
+            }), 200
 
         is_valid, validation_message = validate_ecg_features(features)
         if not is_valid:
