@@ -1,0 +1,168 @@
+{
+  "model_type": "ExtraTreesClassifier_LITE_RenderSafe",
+  "project_mode": "FULLY_ML_RAW_WAVEFORM_CLASSIFICATION",
+  "decision_rule": "ML_ONLY_FOR_NORMAL_ABNORMAL",
+  "dataset": "MIT-BIH Arrhythmia Database via PhysioNet/wfdb",
+  "train_records": [
+    "101",
+    "106",
+    "108",
+    "109",
+    "112",
+    "114",
+    "115",
+    "116",
+    "118",
+    "119",
+    "122",
+    "124",
+    "201",
+    "203",
+    "205",
+    "207",
+    "208",
+    "209",
+    "215",
+    "220",
+    "223",
+    "230"
+  ],
+  "test_records": [
+    "100",
+    "103",
+    "105",
+    "111",
+    "113",
+    "117",
+    "121",
+    "123",
+    "200",
+    "202",
+    "210",
+    "212",
+    "213",
+    "214",
+    "219",
+    "221",
+    "222",
+    "228",
+    "231",
+    "232",
+    "233",
+    "234"
+  ],
+  "record_window_counts_train": {
+    "101": 721,
+    "106": 721,
+    "108": 721,
+    "109": 721,
+    "112": 721,
+    "114": 721,
+    "115": 721,
+    "116": 721,
+    "118": 721,
+    "119": 721,
+    "122": 721,
+    "124": 721,
+    "201": 721,
+    "203": 721,
+    "205": 721,
+    "207": 673,
+    "208": 721,
+    "209": 721,
+    "215": 721,
+    "220": 721,
+    "223": 721,
+    "230": 721
+  },
+  "record_window_counts_test": {
+    "100": 721,
+    "103": 721,
+    "105": 721,
+    "111": 721,
+    "113": 721,
+    "117": 721,
+    "121": 721,
+    "123": 721,
+    "200": 721,
+    "202": 721,
+    "210": 721,
+    "212": 721,
+    "213": 721,
+    "214": 721,
+    "219": 721,
+    "221": 721,
+    "222": 721,
+    "228": 721,
+    "231": 721,
+    "232": 721,
+    "233": 721,
+    "234": 721
+  },
+  "window_seconds": 5.0,
+  "step_seconds": 2.5,
+  "output_length": 400,
+  "n_estimators": 40,
+  "max_depth": 10,
+  "min_samples_leaf": 8,
+  "channel": 0,
+  "normal_definition": "Window contains only N beat annotations",
+  "abnormal_definition": "Window contains at least one valid beat annotation other than N",
+  "label_mapping": {
+    "0": "NORMAL",
+    "1": "ABNORMAL"
+  },
+  "train_counts_before_balance": {
+    "0": 9008,
+    "1": 6806
+  },
+  "train_counts_after_balance": {
+    "0": 2500,
+    "1": 2500
+  },
+  "test_counts": {
+    "0": 8997,
+    "1": 6865
+  },
+  "accuracy": 0.7166183331231875,
+  "balanced_accuracy": 0.7110853168584721,
+  "roc_auc": 0.7860680435600407,
+  "confusion_matrix": [
+    [
+      6768,
+      2229
+    ],
+    [
+      2266,
+      4599
+    ]
+  ],
+  "classification_report": {
+    "NORMAL": {
+      "precision": 0.7491698029665708,
+      "recall": 0.7522507502500834,
+      "f1-score": 0.7507071155232655,
+      "support": 8997.0
+    },
+    "ABNORMAL": {
+      "precision": 0.6735500878734623,
+      "recall": 0.6699198834668609,
+      "f1-score": 0.671730081063317,
+      "support": 6865.0
+    },
+    "accuracy": 0.7166183331231875,
+    "macro avg": {
+      "precision": 0.7113599454200166,
+      "recall": 0.7110853168584721,
+      "f1-score": 0.7112185982932913,
+      "support": 15862.0
+    },
+    "weighted avg": {
+      "precision": 0.716441941151277,
+      "recall": 0.7166183331231875,
+      "f1-score": 0.716526221464033,
+      "support": 15862.0
+    }
+  },
+  "preprocessing": "median baseline removal -> resample to fixed length -> z-score normalization"
+}
