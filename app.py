@@ -3,7 +3,9 @@ import io
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+from scipy import signal
 from joblib import load
 from flask import Flask, render_template, jsonify, request, Response
 from dotenv import load_dotenv
@@ -30,10 +32,13 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 # =====================================================
 # Use the compressed small model because GitHub browser upload accepts files under 25 MB.
 MODEL_PATH = os.getenv("MODEL_PATH", "ecg_mit_hardware_model_v2.joblib")
+RAW_MODEL_PATH = os.getenv("RAW_MODEL_PATH", "ecg_raw_waveform_model.joblib")
 ESP32_API_KEY = os.getenv("ESP32_API_KEY", "").strip()
 
 MODEL_BUNDLE = None
 MODEL_LOAD_ERROR = None
+RAW_MODEL_BUNDLE = None
+RAW_MODEL_LOAD_ERROR = None
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS ecg_predictions (
@@ -252,9 +257,9 @@ def apply_rhythm_safety_logic(prediction_label, prediction_class, confidence, fe
     reasons = []
     if bpm < 50:
         reasons.append("bradycardia range")
-    if bpm >= 120:
+    if bpm > 120:
         reasons.append("tachycardia range")
-    if rr_diff > 0.30:
+    if rr_diff > 0.18:
         reasons.append("irregular RR interval")
 
     if reasons:
@@ -295,6 +300,133 @@ def predict_ecg_status(features):
     return prediction_class, prediction_label, confidence
 
 
+
+
+# =====================================================
+# RAW WAVEFORM ML HELPERS - FULLY ML CLASSIFICATION
+# =====================================================
+def load_raw_model_bundle():
+    """Load the raw waveform ML model once. This model makes the final NORMAL/ABNORMAL decision."""
+    global RAW_MODEL_BUNDLE, RAW_MODEL_LOAD_ERROR
+
+    if RAW_MODEL_BUNDLE is not None:
+        return RAW_MODEL_BUNDLE
+
+    model_file = Path(RAW_MODEL_PATH)
+    if not model_file.exists():
+        RAW_MODEL_LOAD_ERROR = f"Raw waveform model file not found: {RAW_MODEL_PATH}"
+        return None
+
+    try:
+        RAW_MODEL_BUNDLE = load(model_file)
+        RAW_MODEL_LOAD_ERROR = None
+        print(f"Raw waveform ECG ML model loaded: {RAW_MODEL_PATH}")
+        return RAW_MODEL_BUNDLE
+    except Exception as exc:
+        RAW_MODEL_LOAD_ERROR = str(exc)
+        return None
+
+
+def preprocess_raw_waveform(samples, input_length):
+    """
+    Apply the same preprocessing used during training:
+    median baseline removal -> resize/resample -> z-score normalization.
+
+    This preprocessing prepares the signal only. It does NOT decide NORMAL/ABNORMAL.
+    """
+    x = np.asarray(samples, dtype=np.float32)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if x.size < 250:
+        raise ValueError("Not enough ECG samples. Send at least 250 samples.")
+
+    # Remove baseline/DC component. ADC offset does not matter after this step.
+    x = x - np.median(x)
+
+    if x.size != int(input_length):
+        x = signal.resample(x, int(input_length)).astype(np.float32)
+
+    std = float(np.std(x))
+    if std < 1e-6:
+        raise ValueError("ECG waveform is too flat. Check AD8232 output/electrodes/simulator.")
+
+    x = x / std
+    return x.reshape(1, -1)
+
+
+def estimate_bpm_for_display(samples, sample_rate_hz):
+    """
+    Estimate BPM from the same raw waveform only for dashboard/OLED display.
+    This value is NOT used to force the NORMAL/ABNORMAL prediction.
+    """
+    try:
+        fs = float(sample_rate_hz)
+        if fs < 50 or fs > 1000:
+            fs = 250.0
+
+        x = np.asarray(samples, dtype=np.float32)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+        if x.size < int(fs * 2):
+            return None
+
+        x = x - np.median(x)
+        std = float(np.std(x))
+        if std < 1e-6:
+            return None
+        x = x / std
+
+        min_distance = int(0.35 * fs)  # display-only physiological guard
+        prominence = max(0.6, float(np.std(x) * 0.7))
+
+        peaks_pos, _ = signal.find_peaks(x, distance=min_distance, prominence=prominence)
+        peaks_neg, _ = signal.find_peaks(-x, distance=min_distance, prominence=prominence)
+
+        # Choose polarity that gives a plausible number of peaks.
+        candidates = []
+        for peaks in (peaks_pos, peaks_neg):
+            if len(peaks) >= 2:
+                rr = np.diff(peaks) / fs
+                median_rr = float(np.median(rr))
+                if 0.30 <= median_rr <= 2.20:
+                    bpm = 60.0 / median_rr
+                    if 25 <= bpm <= 220:
+                        candidates.append((len(peaks), bpm))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return round(float(candidates[0][1]), 1)
+    except Exception:
+        return None
+
+
+def predict_raw_waveform_status(samples):
+    """Run raw waveform ML model. Final classification is ML-only."""
+    bundle = load_raw_model_bundle()
+    if bundle is None:
+        raise RuntimeError(RAW_MODEL_LOAD_ERROR or "Raw waveform model could not be loaded")
+
+    model = bundle["model"] if isinstance(bundle, dict) and "model" in bundle else bundle
+    input_length = int(bundle.get("input_length", 400)) if isinstance(bundle, dict) else 400
+    label_mapping = bundle.get("label_mapping", {0: "NORMAL", 1: "ABNORMAL"}) if isinstance(bundle, dict) else {0: "NORMAL", 1: "ABNORMAL"}
+
+    X = preprocess_raw_waveform(samples, input_length)
+    prediction_class = int(model.predict(X)[0])
+    prediction_label = str(label_mapping.get(prediction_class, "ABNORMAL")).upper()
+    if prediction_label != "NORMAL":
+        prediction_label = "ABNORMAL"
+        prediction_class = 1
+    else:
+        prediction_class = 0
+
+    confidence = 0.0
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba(X)[0]
+        confidence = float(max(probabilities) * 100.0)
+
+    return prediction_class, prediction_label, confidence
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -310,15 +442,140 @@ def api_health():
     })
 
 
+
+
+@app.route("/api/esp32/raw", methods=["POST"])
+def api_esp32_raw():
+    """
+    ESP32 raw waveform endpoint for fully ML classification.
+
+    Expected JSON:
+    {
+        "api_key": "ECG12345",
+        "device_id": "ESP32_AD8232_01",
+        "samples": [2040, 2043, 2050, ...],
+        "sample_rate": 250,
+        "lo_plus": 0,
+        "lo_minus": 0
+    }
+
+    Final NORMAL/ABNORMAL decision is made by the raw waveform ML model only.
+    BPM is estimated separately for display only and is not used to force prediction.
+    """
+    payload = request.get_json(silent=True) or {}
+
+    if ESP32_API_KEY:
+        provided_key = request.headers.get("X-API-Key", "") or str(payload.get("api_key", ""))
+        if provided_key != ESP32_API_KEY:
+            return jsonify({"status": "UNAUTHORIZED", "message": "Invalid ESP32 API key"}), 401
+
+    try:
+        lo_plus = int(payload.get("lo_plus", payload.get("LO_PLUS", 0)) or 0)
+        lo_minus = int(payload.get("lo_minus", payload.get("LO_MINUS", 0)) or 0)
+        device_id = str(payload.get("device_id", "ESP32_AD8232_01"))
+
+        if lo_plus == 1 or lo_minus == 1:
+            return jsonify({"status": "LEADS_OFF", "message": "Check ECG electrodes/simulator leads"}), 200
+
+        samples = payload.get("samples")
+        if not isinstance(samples, list):
+            return jsonify({"status": "ERROR", "message": "samples must be a JSON list"}), 400
+
+        if len(samples) < 250:
+            return jsonify({"status": "WAITING", "message": "Not enough raw ECG samples"}), 200
+        if len(samples) > 5000:
+            return jsonify({"status": "ERROR", "message": "Too many samples. Send 5 seconds only."}), 400
+
+        sample_rate = get_optional_float(payload, "sample_rate", "sampleRate", "fs") or 250.0
+
+        prediction_class, prediction_label, confidence = predict_raw_waveform_status(samples)
+        bpm = estimate_bpm_for_display(samples, sample_rate)
+
+        row = None
+        save_message = "Raw waveform ML prediction saved to PostgreSQL"
+        try:
+            row = execute_db(
+                """
+                INSERT INTO ecg_predictions
+                    (device_id, pre_rr, post_rr, r_peak, qrs_interval, heart_rate,
+                     prediction_class, prediction_label, confidence, source, model_source, message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    to_char(timestamp, 'DD/MM/YYYY, HH24:MI:SS') AS timestamp,
+                    device_id,
+                    pre_rr,
+                    post_rr,
+                    r_peak,
+                    qrs_interval,
+                    heart_rate,
+                    prediction_class,
+                    prediction_label,
+                    confidence;
+                """,
+                (
+                    device_id,
+                    None,
+                    None,
+                    0.0,
+                    None,
+                    bpm,
+                    prediction_class,
+                    prediction_label,
+                    confidence,
+                    "ESP32_RAW_WAVEFORM_ML",
+                    RAW_MODEL_PATH,
+                    "Raw waveform ML prediction only; BPM estimated for display only.",
+                ),
+                fetch_one=True,
+            )
+        except Exception as db_exc:
+            save_message = f"Prediction made, but database save failed: {db_exc}"
+
+        return jsonify({
+            "status": prediction_label,
+            "prediction_label": prediction_label,
+            "prediction_class": prediction_class,
+            "confidence": confidence,
+            "heart_rate": bpm,
+            "bpm": bpm,
+            "sample_rate": sample_rate,
+            "sample_count": len(samples),
+            "decision_message": "Raw waveform ML prediction only",
+            "message": save_message,
+            "saved_record": row,
+        }), 201
+
+    except Exception as exc:
+        return jsonify({"status": "ERROR", "message": str(exc)}), 400
+
+
+@app.route("/api/raw-model-status")
+def api_raw_model_status():
+    bundle = load_raw_model_bundle()
+    return jsonify({
+        "raw_model_path": RAW_MODEL_PATH,
+        "raw_model_exists": Path(RAW_MODEL_PATH).exists(),
+        "raw_model_loaded": bundle is not None,
+        "raw_model_error": RAW_MODEL_LOAD_ERROR,
+        "decision_rule": "ML_ONLY_FOR_NORMAL_ABNORMAL",
+    })
+
+
 @app.route("/api/esp32/features", methods=["POST"])
 def api_esp32_features():
     """
     Direct ESP32 WiFi endpoint for V2.
-    ESP32 sends hardware-compatible ECG rhythm features here.
-    Server runs ML prediction, applies a safety rhythm check, stores result into PostgreSQL,
-    and returns NORMAL/ABNORMAL to the OLED.
+    Backward compatible:
+    - If ESP32 sends raw waveform samples here by mistake, process it using raw waveform ML.
+    - If ESP32 sends RR/features, process it using the older feature endpoint.
     """
     payload = request.get_json(silent=True) or {}
+
+    # SAFETY PATCH: if the Arduino accidentally posts raw ECG samples to /api/esp32/features,
+    # do not return "Missing pre_rr_s". Route it to the raw waveform ML handler.
+    if isinstance(payload.get("samples"), list):
+        return api_esp32_raw()
 
     if ESP32_API_KEY:
         provided_key = request.headers.get("X-API-Key", "") or str(payload.get("api_key", ""))
@@ -356,23 +613,6 @@ def api_esp32_features():
             "rr_diff_s": rr_diff,
             "bpm": heart_rate,
         }
-
-        # Normal-mode transition filter:
-        # When the simulator is changed from tachy/brady/irregular back to normal,
-        # the first RR pair may mix one old interval with one new normal interval.
-        # Example: pre_rr=0.530 s and post_rr=0.749 s gives bpm≈80 but rr_diff≈0.219 s.
-        # That is a transition artifact, not a stable normal rhythm. Do not save/predict it.
-        if 55 <= heart_rate <= 105 and 0.18 < rr_diff <= 0.30:
-            return jsonify({
-                "status": "WAITING",
-                "prediction_label": "WAITING",
-                "prediction_class": -1,
-                "confidence": 0.0,
-                "heart_rate": heart_rate,
-                "bpm": heart_rate,
-                "decision_message": "Transition filter: waiting for stable normal RR intervals",
-                "message": "Rhythm stabilizing. Wait 3-5 beats before reading.",
-            }), 200
 
         is_valid, validation_message = validate_ecg_features(features)
         if not is_valid:
