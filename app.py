@@ -356,8 +356,8 @@ def preprocess_raw_waveform(samples, input_length):
 
 def estimate_bpm_for_display(samples, sample_rate_hz):
     """
-    Estimate BPM from raw waveform for dashboard/OLED display.
-    This version is tuned for ECG simulator testing up to about 180 BPM.
+    Estimate BPM from the same raw waveform only for dashboard/OLED display.
+    This value is NOT used to force the NORMAL/ABNORMAL prediction.
     """
     try:
         fs = float(sample_rate_hz)
@@ -369,68 +369,36 @@ def estimate_bpm_for_display(samples, sample_rate_hz):
         if x.size < int(fs * 2):
             return None
 
-        # Remove DC/baseline and normalize
         x = x - np.median(x)
         std = float(np.std(x))
         if std < 1e-6:
             return None
         x = x / std
 
-        # 180 BPM = RR about 0.333 s.
-        # Old 0.35 s distance blocked 180 BPM, so use 0.22 s.
-        min_distance = int(0.22 * fs)
-        prominence = max(0.35, float(np.std(x) * 0.45))
+        min_distance = int(0.35 * fs)  # display-only physiological guard
+        prominence = max(0.6, float(np.std(x) * 0.7))
 
         peaks_pos, _ = signal.find_peaks(x, distance=min_distance, prominence=prominence)
         peaks_neg, _ = signal.find_peaks(-x, distance=min_distance, prominence=prominence)
 
+        # Choose polarity that gives a plausible number of peaks.
         candidates = []
         for peaks in (peaks_pos, peaks_neg):
             if len(peaks) >= 2:
                 rr = np.diff(peaks) / fs
-                rr = rr[(rr >= 0.22) & (rr <= 2.50)]
-                if rr.size >= 2:
-                    median_rr = float(np.median(rr))
+                median_rr = float(np.median(rr))
+                if 0.30 <= median_rr <= 2.20:
                     bpm = 60.0 / median_rr
-                    if 20 <= bpm <= 260:
-                        # Prefer polarity with more valid beats and stable RR
-                        rr_stability = float(np.std(rr))
-                        candidates.append((len(rr), -rr_stability, bpm))
+                    if 25 <= bpm <= 220:
+                        candidates.append((len(peaks), bpm))
 
         if not candidates:
             return None
 
-        candidates.sort(reverse=True)
-        return round(float(candidates[0][2]), 1)
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return round(float(candidates[0][1]), 1)
     except Exception:
         return None
-
-
-def apply_bpm_simulator_rule(ml_prediction_class, ml_prediction_label, ml_confidence, bpm):
-    """
-    Simulator demo rule requested by user:
-    - BPM < 40       => ABNORMAL
-    - 40 to 100 BPM  => NORMAL
-    - BPM > 100      => ABNORMAL
-
-    Important: this makes the final display a HYBRID decision, not ML-only.
-    """
-    if bpm is None:
-        return ml_prediction_class, ml_prediction_label, ml_confidence, "ML prediction; BPM not available"
-
-    try:
-        bpm = float(bpm)
-    except Exception:
-        return ml_prediction_class, ml_prediction_label, ml_confidence, "ML prediction; BPM invalid"
-
-    if bpm < 40:
-        return 1, "ABNORMAL", max(float(ml_confidence), 90.0), "BPM rule: bradycardia below 40 BPM"
-    if 40 <= bpm <= 100:
-        return 0, "NORMAL", max(float(ml_confidence), 90.0), "BPM rule: normal simulator range 40-100 BPM"
-    if bpm > 100:
-        return 1, "ABNORMAL", max(float(ml_confidence), 90.0), "BPM rule: tachycardia above 100 BPM"
-
-    return ml_prediction_class, ml_prediction_label, ml_confidence, "ML prediction"
 
 
 def predict_raw_waveform_status(samples):
@@ -491,8 +459,8 @@ def api_esp32_raw():
         "lo_minus": 0
     }
 
-    Raw waveform ML is performed first. Then a simulator BPM rule is applied
-    to match the requested demo ranges: <40 abnormal, 40-100 normal, >100 abnormal.
+    Final NORMAL/ABNORMAL decision is made by the raw waveform ML model only.
+    BPM is estimated separately for display only and is not used to force prediction.
     """
     payload = request.get_json(silent=True) or {}
 
@@ -520,12 +488,8 @@ def api_esp32_raw():
 
         sample_rate = get_optional_float(payload, "sample_rate", "sampleRate", "fs") or 250.0
 
-        ml_prediction_class, ml_prediction_label, ml_confidence = predict_raw_waveform_status(samples)
+        prediction_class, prediction_label, confidence = predict_raw_waveform_status(samples)
         bpm = estimate_bpm_for_display(samples, sample_rate)
-
-        prediction_class, prediction_label, confidence, decision_message = apply_bpm_simulator_rule(
-            ml_prediction_class, ml_prediction_label, ml_confidence, bpm
-        )
 
         row = None
         save_message = "Raw waveform ML prediction saved to PostgreSQL"
@@ -561,7 +525,7 @@ def api_esp32_raw():
                     confidence,
                     "ESP32_RAW_WAVEFORM_ML",
                     RAW_MODEL_PATH,
-                    decision_message,
+                    "Raw waveform ML prediction only; BPM estimated for display only.",
                 ),
                 fetch_one=True,
             )
@@ -577,9 +541,7 @@ def api_esp32_raw():
             "bpm": bpm,
             "sample_rate": sample_rate,
             "sample_count": len(samples),
-            "decision_message": decision_message,
-            "ml_label": ml_prediction_label,
-            "ml_confidence": ml_confidence,
+            "decision_message": "Raw waveform ML prediction only",
             "message": save_message,
             "saved_record": row,
         }), 201
