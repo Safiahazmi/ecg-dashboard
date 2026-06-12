@@ -400,7 +400,7 @@ function setPredictionStyle(label) {
 }
 
 function setClassification(data) {
-    const raw = rawLabel(data?.live_status || data?.prediction_label);
+    const raw = rawLabel(data?.prediction_label);
     const label = raw || "WAITING";
     setPredictionStyle(label);
 

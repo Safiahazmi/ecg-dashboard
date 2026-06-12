@@ -17,6 +17,7 @@ app = Flask(__name__)
 # =====================================================
 # DATABASE SETTINGS
 # =====================================================
+# Render uses DATABASE_URL. Local PostgreSQL can still use DB_HOST/DB_NAME/etc.
 DATABASE_URL = os.getenv("DATABASE_URL")
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "ecg_db")
@@ -27,7 +28,8 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 # =====================================================
 # ML / ESP32 WIFI API SETTINGS
 # =====================================================
-MODEL_PATH = os.getenv("MODEL_PATH", "ecg_hardware_friendly_model_small.joblib")
+# Use the compressed small model because GitHub browser upload accepts files under 25 MB.
+MODEL_PATH = os.getenv("MODEL_PATH", "ecg_mit_hardware_model_v2.joblib")
 ESP32_API_KEY = os.getenv("ESP32_API_KEY", "").strip()
 
 MODEL_BUNDLE = None
@@ -85,6 +87,7 @@ def ensure_table_exists():
         cur.close()
         print("ecg_predictions and patients tables are ready.")
     except Exception as exc:
+        # Do not crash Render during boot if DB is sleeping/unavailable.
         print("Database setup warning:", exc)
     finally:
         if conn:
@@ -151,6 +154,7 @@ def get_optional_float(payload, *keys):
 
 
 def calculate_heart_rate(pre_rr, post_rr=None):
+    """Calculate heart rate in BPM from valid RR interval values in seconds."""
     intervals = []
     for value in (pre_rr, post_rr):
         try:
@@ -175,9 +179,10 @@ def calculate_heart_rate(pre_rr, post_rr=None):
 
 
 # =====================================================
-# ML MODEL HELPERS
+# ML MODEL HELPERS FOR ESP32 WIFI MODE
 # =====================================================
 def load_model_bundle():
+    """Load the trained ECG ML model once when the ESP32 WiFi API is used."""
     global MODEL_BUNDLE, MODEL_LOAD_ERROR
 
     if MODEL_BUNDLE is not None:
@@ -206,10 +211,19 @@ def get_float(payload, *keys):
 
 
 def validate_ecg_features(data):
-    pre_rr = data["0_pre-RR"]
-    post_rr = data["0_post-RR"]
-    r_peak = data["0_rPeak"]
-    qrs_interval = data["0_qrs_interval"]
+    """
+    Validate ESP32 ECG features before prediction.
+
+    Unit rules for V2:
+    - pre_rr_s and post_rr_s are in seconds.
+    - rr_diff_s is calculated in seconds.
+    - bpm is beats per minute.
+    - r_peak and qrs_interval are saved for dashboard/debug, but they are NOT used by the ML model.
+    """
+    pre_rr = float(data["pre_rr_s"])
+    post_rr = float(data["post_rr_s"])
+    rr_diff = float(data["rr_diff_s"])
+    bpm = float(data["bpm"])
 
     if pre_rr < 0.30 or pre_rr > 2.00:
         return False, f"preRR not realistic: {pre_rr:.4f} s"
@@ -217,45 +231,61 @@ def validate_ecg_features(data):
     if post_rr < 0.30 or post_rr > 2.00:
         return False, f"postRR not realistic: {post_rr:.4f} s"
 
-    if abs(pre_rr - post_rr) > 1.50:
-        return False, f"RR interval mismatch too large: preRR={pre_rr:.4f}, postRR={post_rr:.4f}"
+    if rr_diff < 0.0 or rr_diff > 1.50:
+        return False, f"RR difference not realistic: {rr_diff:.4f} s"
 
-    if r_peak < 300 or r_peak > 4095:
-        return False, f"rPeak not valid: {r_peak:.2f} ADC"
-
-    if qrs_interval < 0.04 or qrs_interval > 0.20:
-        return False, f"QRS interval not valid: {qrs_interval:.4f} s"
+    if bpm < 30 or bpm > 200:
+        return False, f"BPM not realistic: {bpm:.1f}"
 
     return True, "Valid ECG features"
 
 
+def apply_rhythm_safety_logic(prediction_label, prediction_class, confidence, features):
+    """
+    Keep the ML model, but add a simple safety layer for simulator/hardware testing.
+    This helps the system react correctly to obvious bradycardia, tachycardia,
+    or highly irregular RR rhythm even when the model probability is uncertain.
+    """
+    bpm = float(features["bpm"])
+    rr_diff = float(features["rr_diff_s"])
+
+    reasons = []
+    if bpm < 50:
+        reasons.append("bradycardia range")
+    if bpm > 120:
+        reasons.append("tachycardia range")
+    if rr_diff > 0.18:
+        reasons.append("irregular RR interval")
+
+    if reasons:
+        return 1, "ABNORMAL", max(float(confidence), 85.0), "Hybrid rule: " + ", ".join(reasons)
+
+    return prediction_class, prediction_label, confidence, "ML prediction"
+
+
 def predict_ecg_status(features):
+    """Run the V2 hardware-compatible trained model and return class, label, confidence."""
     bundle = load_model_bundle()
     if bundle is None:
         raise RuntimeError(MODEL_LOAD_ERROR or "Model could not be loaded")
 
     model = bundle["pipeline"] if isinstance(bundle, dict) and "pipeline" in bundle else bundle
-
-    feature_columns = bundle.get(
-        "feature_columns",
-        ["0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"]
-    ) if isinstance(bundle, dict) else ["0_pre-RR", "0_post-RR", "0_rPeak", "0_qrs_interval"]
-
-    label_mapping = bundle.get(
-        "label_mapping",
-        {0: "Normal", 1: "Abnormal"}
-    ) if isinstance(bundle, dict) else {0: "Normal", 1: "Abnormal"}
+    feature_columns = bundle.get("feature_columns", [
+        "pre_rr_s", "post_rr_s", "rr_diff_s", "bpm"
+    ]) if isinstance(bundle, dict) else ["pre_rr_s", "post_rr_s", "rr_diff_s", "bpm"]
+    label_mapping = bundle.get("label_mapping", {0: "NORMAL", 1: "ABNORMAL"}) if isinstance(bundle, dict) else {0: "NORMAL", 1: "ABNORMAL"}
 
     X = pd.DataFrame([{
-        "0_pre-RR": features["0_pre-RR"],
-        "0_post-RR": features["0_post-RR"],
-        "0_rPeak": features["0_rPeak"],
-        "0_qrs_interval": features["0_qrs_interval"],
+        "pre_rr_s": features["pre_rr_s"],
+        "post_rr_s": features["post_rr_s"],
+        "rr_diff_s": features["rr_diff_s"],
+        "bpm": features["bpm"],
     }])[feature_columns]
 
     prediction_class = int(model.predict(X)[0])
-    raw_label = str(label_mapping.get(prediction_class, "Abnormal"))
-    prediction_label = "NORMAL" if raw_label.lower() == "normal" else "ABNORMAL"
+    prediction_label = str(label_mapping.get(prediction_class, "ABNORMAL")).upper()
+    if prediction_label != "NORMAL":
+        prediction_label = "ABNORMAL"
 
     confidence = 0.0
     if hasattr(model, "predict_proba"):
@@ -282,6 +312,12 @@ def api_health():
 
 @app.route("/api/esp32/features", methods=["POST"])
 def api_esp32_features():
+    """
+    Direct ESP32 WiFi endpoint for V2.
+    ESP32 sends hardware-compatible ECG rhythm features here.
+    Server runs ML prediction, applies a safety rhythm check, stores result into PostgreSQL,
+    and returns NORMAL/ABNORMAL to the OLED.
+    """
     payload = request.get_json(silent=True) or {}
 
     if ESP32_API_KEY:
@@ -297,61 +333,80 @@ def api_esp32_features():
         if lo_plus == 1 or lo_minus == 1:
             return jsonify({"status": "LEADS_OFF", "message": "Check ECG electrodes"}), 200
 
+        pre_rr = get_float(payload, "pre_rr_s", "pre_rr", "preRR", "0_pre-RR")
+        post_rr = get_float(payload, "post_rr_s", "post_rr", "postRR", "0_post-RR")
+        rr_diff = abs(pre_rr - post_rr)
+
+        received_heart_rate = get_optional_float(payload, "heart_rate", "heartRate", "bpm", "BPM")
+        heart_rate = received_heart_rate if received_heart_rate and 20 <= received_heart_rate <= 250 else calculate_heart_rate(pre_rr, post_rr)
+        if heart_rate is None:
+            return jsonify({"status": "WAITING", "message": "Cannot calculate BPM"}), 200
+
+        r_peak = get_optional_float(payload, "r_peak", "rPeak", "0_rPeak")
+        if r_peak is None:
+            r_peak = 0.0
+
+        qrs_interval = get_optional_float(payload, "qrs_interval", "qrsInterval", "0_qrs_interval")
+        if qrs_interval is None or qrs_interval < 0.03 or qrs_interval > 0.25:
+            qrs_interval = 0.08
+
         features = {
-            "0_pre-RR": get_float(payload, "0_pre-RR", "pre_rr", "preRR"),
-            "0_post-RR": get_float(payload, "0_post-RR", "post_rr", "postRR"),
-            "0_rPeak": get_float(payload, "0_rPeak", "r_peak", "rPeak"),
-            "0_qrs_interval": get_float(payload, "0_qrs_interval", "qrs_interval", "qrsInterval"),
+            "pre_rr_s": pre_rr,
+            "post_rr_s": post_rr,
+            "rr_diff_s": rr_diff,
+            "bpm": heart_rate,
         }
 
         is_valid, validation_message = validate_ecg_features(features)
         if not is_valid:
             return jsonify({"status": "WAITING", "message": validation_message}), 200
 
-        received_heart_rate = get_optional_float(payload, "heart_rate", "heartRate", "bpm", "BPM")
-        heart_rate = (
-            received_heart_rate
-            if received_heart_rate and 20 <= received_heart_rate <= 250
-            else calculate_heart_rate(features["0_pre-RR"], features["0_post-RR"])
+        ml_class, ml_label, ml_confidence = predict_ecg_status(features)
+        prediction_class, prediction_label, confidence, decision_message = apply_rhythm_safety_logic(
+            ml_label, ml_class, ml_confidence, features
         )
 
-        prediction_class, prediction_label, confidence = predict_ecg_status(features)
-
-        row = execute_db(
-            """
-            INSERT INTO ecg_predictions
-                (device_id, pre_rr, post_rr, r_peak, qrs_interval, heart_rate,
-                 prediction_class, prediction_label, confidence, source, model_source, message)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING
-                id,
-                to_char(timestamp, 'DD/MM/YYYY, HH24:MI:SS') AS timestamp,
-                device_id,
-                pre_rr,
-                post_rr,
-                r_peak,
-                qrs_interval,
-                heart_rate,
-                prediction_class,
-                prediction_label,
-                confidence;
-            """,
-            (
-                device_id,
-                features["0_pre-RR"],
-                features["0_post-RR"],
-                features["0_rPeak"],
-                features["0_qrs_interval"],
-                heart_rate,
-                prediction_class,
-                prediction_label,
-                confidence,
-                "ESP32_WIFI",
-                MODEL_PATH,
-                "Prediction saved from ESP32 WiFi API",
-            ),
-            fetch_one=True,
-        )
+        row = None
+        save_message = "Prediction saved to PostgreSQL"
+        try:
+            row = execute_db(
+                """
+                INSERT INTO ecg_predictions
+                    (device_id, pre_rr, post_rr, r_peak, qrs_interval, heart_rate,
+                     prediction_class, prediction_label, confidence, source, model_source, message)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    to_char(timestamp, 'DD/MM/YYYY, HH24:MI:SS') AS timestamp,
+                    device_id,
+                    pre_rr,
+                    post_rr,
+                    r_peak,
+                    qrs_interval,
+                    heart_rate,
+                    prediction_class,
+                    prediction_label,
+                    confidence;
+                """,
+                (
+                    device_id,
+                    pre_rr,
+                    post_rr,
+                    r_peak,
+                    qrs_interval,
+                    heart_rate,
+                    prediction_class,
+                    prediction_label,
+                    confidence,
+                    "ESP32_WIFI_V2",
+                    MODEL_PATH,
+                    decision_message,
+                ),
+                fetch_one=True,
+            )
+        except Exception as db_exc:
+            # Return the prediction to the ESP32 even if PostgreSQL is temporarily unavailable.
+            save_message = f"Prediction made, but database save failed: {db_exc}"
 
         return jsonify({
             "status": prediction_label,
@@ -359,12 +414,16 @@ def api_esp32_features():
             "prediction_class": prediction_class,
             "confidence": confidence,
             "heart_rate": heart_rate,
-            "message": "Prediction saved to PostgreSQL",
+            "bpm": heart_rate,
+            "ml_label": ml_label,
+            "ml_confidence": ml_confidence,
+            "decision_message": decision_message,
+            "message": save_message,
             "saved_record": row,
         }), 201
 
     except Exception as exc:
-        return jsonify({"status": "ERROR", "message": str(exc)}), 500
+        return jsonify({"status": "ERROR", "message": str(exc)}), 400
 
 
 @app.route("/api/latest")
@@ -388,31 +447,13 @@ def api_latest():
                 END AS heart_rate,
                 prediction_class,
                 prediction_label,
-                confidence,
-                CASE
-                    WHEN timestamp < (CURRENT_TIMESTAMP - INTERVAL '60 seconds') THEN 'WAITING'
-                    ELSE prediction_label
-                END AS live_status
+                confidence
             FROM ecg_predictions
-            ORDER BY id DESC
+            ORDER BY timestamp DESC, id DESC
             LIMIT 1;
             """
         )
-
-        if not rows:
-            return jsonify({
-                "id": None,
-                "timestamp": "--",
-                "device_id": "--",
-                "live_status": "WAITING",
-                "prediction_label": "WAITING",
-                "heart_rate": None,
-                "confidence": None,
-                "message": "Waiting for ECG signal"
-            })
-
-        return jsonify(rows[0])
-
+        return jsonify(rows[0] if rows else None)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -440,7 +481,7 @@ def api_history():
                 prediction_label,
                 confidence
             FROM ecg_predictions
-            ORDER BY id DESC
+            ORDER BY timestamp DESC, id DESC
             LIMIT 30;
             """
         )
@@ -458,17 +499,10 @@ def api_stats():
                 COUNT(*) AS total_predictions,
                 COUNT(*) FILTER (WHERE LOWER(prediction_label) = 'normal') AS normal_count,
                 COUNT(*) FILTER (WHERE LOWER(prediction_label) = 'abnormal') AS abnormal_count
-            FROM ecg_predictions
-            WHERE timestamp >= (CURRENT_TIMESTAMP - INTERVAL '1 hour');
+            FROM ecg_predictions;
             """
         )
-
-        return jsonify(rows[0] if rows else {
-            "total_predictions": 0,
-            "normal_count": 0,
-            "abnormal_count": 0
-        })
-
+        return jsonify(rows[0] if rows else {"total_predictions": 0, "normal_count": 0, "abnormal_count": 0})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -485,7 +519,7 @@ def api_patient():
                     age,
                     to_char(created_at, 'DD/MM/YYYY, HH24:MI:SS') AS created_at
                 FROM patients
-                ORDER BY id DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT 1;
                 """
             )
@@ -525,12 +559,13 @@ def api_patient():
 
 @app.route("/api/export-excel")
 def api_export_excel():
+    """Export an Excel-compatible CSV file that can be opened directly in Microsoft Excel."""
     try:
         patient_rows = query_db(
             """
             SELECT patient_name, age
             FROM patients
-            ORDER BY id DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT 1;
             """
         )
@@ -554,7 +589,7 @@ def api_export_excel():
                 prediction_label,
                 confidence
             FROM ecg_predictions
-            ORDER BY id DESC;
+            ORDER BY timestamp DESC, id DESC;
             """
         )
 
@@ -603,16 +638,9 @@ def api_export_excel():
 def api_db_status():
     try:
         query_db("SELECT 1;")
-        return jsonify({
-            "connected": True,
-            "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL"
-        })
+        return jsonify({"connected": True, "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL"})
     except Exception as exc:
-        return jsonify({
-            "connected": False,
-            "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL",
-            "error": str(exc)
-        })
+        return jsonify({"connected": False, "database": DB_NAME if not DATABASE_URL else "Render PostgreSQL", "error": str(exc)})
 
 
 ensure_table_exists()

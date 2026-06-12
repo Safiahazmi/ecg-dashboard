@@ -1,0 +1,63 @@
+{
+  "data_summary": {
+    "input_rows": 100689,
+    "rows_after_filtering": 98830,
+    "normal_rows": 88793,
+    "abnormal_rows": 10037,
+    "mit_bih_sampling_frequency_hz": 360.0,
+    "feature_columns": [
+      "pre_rr_s",
+      "post_rr_s",
+      "rr_diff_s",
+      "bpm"
+    ],
+    "label_mapping": {
+      "0": "NORMAL",
+      "1": "ABNORMAL"
+    }
+  },
+  "metrics": {
+    "accuracy": 0.8951229383790347,
+    "balanced_accuracy": 0.8638526209003328,
+    "f1_abnormal": 0.614898755340888,
+    "roc_auc": 0.9420331110385569,
+    "confusion_matrix": [
+      [
+        16038,
+        1721
+      ],
+      [
+        352,
+        1655
+      ]
+    ],
+    "classification_report": {
+      "NORMAL": {
+        "precision": 0.978523489932886,
+        "recall": 0.9030913902809843,
+        "f1-score": 0.93929544056927,
+        "support": 17759.0
+      },
+      "ABNORMAL": {
+        "precision": 0.4902251184834123,
+        "recall": 0.8246138515196811,
+        "f1-score": 0.614898755340888,
+        "support": 2007.0
+      },
+      "accuracy": 0.8951229383790347,
+      "macro avg": {
+        "precision": 0.7343743042081492,
+        "recall": 0.8638526209003328,
+        "f1-score": 0.777097097955079,
+        "support": 19766.0
+      },
+      "weighted avg": {
+        "precision": 0.9289426525606763,
+        "recall": 0.8951229383790347,
+        "f1-score": 0.9063568517170305,
+        "support": 19766.0
+      }
+    }
+  },
+  "output_model": "ecg_mit_hardware_model_v2.joblib"
+}
